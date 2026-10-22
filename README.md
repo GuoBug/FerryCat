@@ -13,6 +13,12 @@
 > **FerryCat** (`ferrycat`) is a lightweight, deterministic cross-host AI agent handoff and code review bus built on the Model Context Protocol (MCP) and Node.js built-in `node:sqlite` (WAL mode).  
 > Purpose-built to safely bridge isolated desktop IDE agent hosts (such as Google Antigravity, WorkBuddy, Claude Code, and Cursor) across separate OS processes without context drift or blind reviews on stale files.
 
+<p align="center">
+  <img src="https://guobug.github.io/assets/images/flowchart-ferrycat-cross-host-demand-and-workflow.svg" alt="FerryCat Architecture and Workflow" width="960" />
+</p>
+
+> 📖 **Deep Dive**: [Why I Started Building FerryCat: When Two AI Coding Hosts Live on the Same Desktop](https://guobug.github.io/posts/2026/10/22/why-we-built-ferrycat-cross-host-agent-review-bus/)
+
 ---
 
 ## Core Pain Points & Engineering Solutions

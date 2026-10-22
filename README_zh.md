@@ -13,6 +13,12 @@
 > **FerryCat** (`ferrycat`) 是一个基于 Model Context Protocol (MCP) 与 Node.js 内置 `node:sqlite`（WAL 并发模式）构建的轻量级、确定性跨宿主 AI Agent 工单交接与交叉评审总线。  
 > 专为解决单机桌面环境下不同 IDE 宿主（如 Google Antigravity、WorkBuddy、Claude Code、Cursor）因进程物理隔离导致的上下文割裂、未落盘代码静默盲审与非结构化交付痛点而设计。
 
+<p align="center">
+  <img src="https://guobug.github.io/assets/images/flowchart-ferrycat-cross-host-demand-and-workflow.svg" alt="FerryCat 跨宿主契约摆渡全景" width="960" />
+</p>
+
+> 📖 **深度长文**：[为什么我开始做 FerryCat：当你的电脑上同时开着两个 AI 编程软件](https://guobug.github.io/posts/2026/10/22/why-we-built-ferrycat-cross-host-agent-review-bus/)
+
 ---
 
 ## 核心痛点与工程解法
