@@ -1,0 +1,237 @@
+﻿{
+  "total_returned": 3,
+  "contracts": [
+    {
+      "contract_id": "fc_1792681532336_31d1b6e4",
+      "requester_agent": "antigravity",
+      "target_agent": "workbuddy-hy3",
+      "task_type": "code_review",
+      "title": "[Hy3] MCP 鍗忚鏆撮湶灞備笌 CLI 鍏ュ彛瀹夊叏鎬у鏌?,
+      "context_summary": "璇峰鏌?src/index.ts 涓?src/cli.ts锛氭鏌?4 涓?MCP 宸ュ叿鐨?Zod Schema 绾︽潫浠ュ強 CLI 鍙傛暟瑙ｆ瀽鏄惁瀛樺湪娉ㄥ叆鎴栨湭鎹曡幏寮傚父銆?,
+      "workspace_root": "F:\\git\\FerryCat",
+      "status": "COMPLETED",
+      "is_logically_expired": false,
+      "retry_count": 0,
+      "max_retries": 2,
+      "pointers": [
+        {
+          "path": "src/index.ts",
+          "size": 6279,
+          "mtime_ms": 1792680325923,
+          "sha256": "c7288f0f65d82305fcd091ee1a04b71ed74b89331e1ed9970bfe7b96d0f3b71a",
+          "first_line": "#!/usr/bin/env node",
+          "last_line": "});",
+          "line_range": [
+            1,
+            185
+          ]
+        },
+        {
+          "path": "src/cli.ts",
+          "size": 1990,
+          "mtime_ms": 1792681141763,
+          "sha256": "cb13ff3b4a5c0a34e16bba10281df9e3e1a23bf3ce138648b2de023b2a38b144",
+          "first_line": "#!/usr/bin/env node",
+          "last_line": "}",
+          "line_range": [
+            1,
+            72
+          ]
+        }
+      ],
+      "contract_schema": {
+        "type": "object",
+        "required": [
+          "passed",
+          "suggestions",
+          "verdict"
+        ],
+        "properties": {
+          "passed": {
+            "type": "boolean"
+          },
+          "suggestions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "verdict": {
+            "type": "string"
+          }
+        }
+      },
+      "result_summary": "瀹℃煡 src/index.ts锛? 涓?MCP 宸ュ叿 Zod schema锛変笌 src/cli.ts锛圕LI 鍙傛暟瑙ｆ瀽锛夛細鏈彂鐜板彲纭鐨勫懡浠ゆ敞鍏ユ垨杈圭晫鏈崟鑾峰紓甯革紱MCP 宸ュ叿灞傚紓甯搁殧绂诲畬鏁达紝CLI 澶栧眰 try/catch 鍙厹搴曘€傚瓨鍦ㄤ袱澶勪腑绛夊姞鍥虹己鍙ｏ紙CLI 缁曡繃 Zod 鏍￠獙銆佹寚閽堣矾寰勬湭鍋氶亶鍘嗙害鏉燂級鍙婅嫢骞蹭綆鍗卞仴澹€ч」銆俻assed=true锛屽缓璁悎鍏ュ姞鍥洪」鍚庡啀瑙嗕负鐢熶骇灏辩华銆?,
+      "structured_output": {
+        "passed": true,
+        "suggestions": [
+          "锛堜腑锛塁LI 鍏ュ彛缁曡繃 Zod 鏍￠獙锛歝li.ts 鐨?parseArgs 浠呭仛瀛楁鏄犲皠涓?Number() 寮鸿浆锛屾湭搴旂敤 index.ts 涓?MCP 宸ュ叿灞傚己鍒剁殑绫诲瀷/鑼冨洿绾︽潫锛堝 limit 1鈥?00銆乼itle 涓婇檺 120銆乼ask_type 鏋氫妇銆乫ulfill 蹇呭～ contract_id/result_summary锛夈€傞€氳繃 CLI 鍙紶鍏ヨ秺鐣屾垨缂哄け瀛楁锛屽紩鎿庡彲鑳芥敹鍒版湭鏍￠獙杈撳叆銆傚缓璁?CLI 涓?MCP 灞傚叡鐢ㄥ悓涓€濂?Zod schema 瀵?data 鍋氭牎楠屻€?,
+          "锛堜腑锛夎矾寰勯亶鍘嗘湭鍦?schema 灞傜害鏉燂細workspace_root 涓?pointers[].path 浠?min(1)锛屾湭鎷掔粷 '..' 娈垫垨瓒婄晫缁濆璺緞銆傚绾︿緷璧?worker 绔?sha256 鎸囩汗鏍￠獙闃茬鏀癸紝浣嗚嫢寮曟搸浠ュ瓧绗︿覆鎷兼帴鏋勫缓璺緞锛屾伓鎰?path 鍙兘閫冮€?workspace_root銆傚缓璁湪鎸囬拡 schema 澧炲姞 refine 鎷掔粷 '..' 涓庝互 '/' 寮€澶寸殑 path锛屽苟鍦ㄥ紩鎿庡眰鐢?path.resolve + 鍓嶇紑鏍￠獙銆?,
+          "锛堜綆锛夌己涔忎笂鐣岀害鏉?娼滃湪 DoS锛歱ointers 鏁扮粍浠?.min(1) 鏃?.max()锛宑ontext_summary 浠?.min(1) 鏃犻暱搴︿笂闄愩€傚彲鎻愪氦瓒呭ぇ濂戠害閫犳垚瀛樺偍/澶勭悊鍘嬪姏銆傚缓璁负 pointers 璁惧悎鐞嗕笂鐣岋紙濡?50锛夊苟涓洪暱鏂囨湰瀛楁璁?max銆?,
+          "锛堜綆锛塁LI 缂哄け鏃楁爣鍊兼椂闈欓粯涓㈠純锛氬 '--agent' 浣嶄簬鏈熬涓旂己鍊硷紝'&& rest[i+1]' 瀵艰嚧璇ユ棗鏍囪闈欓粯蹇界暐锛屽懡浠ゅ彲鑳戒互閿欒韬唤杩愯銆傚缓璁缂哄€肩殑鏃楁爣鏄惧紡鎶ラ敊閫€鍑恒€?,
+          "锛堜綆锛塁LI 鐩存帴 Number() 寮鸿浆 --limit/--id 涓嶅仛鏍￠獙锛氫紶鍏ラ潪鏁板瓧寰楀埌 NaN锛岀粫杩?MCP 灞?int 绾︽潫銆傚缓璁?CLI 澶嶇敤 Zod 鏍￠獙鎴栬嚦灏戝仛 isFinite/鏁存暟妫€鏌ャ€?,
+          "锛堜俊鎭級宸ュ叿灞傚紓甯搁殧绂昏壇濂斤細index.ts 鍥涗釜 tool handler 鍧囩敤 try/catch 杩斿洖 isError:true锛宮ain() 鏈?fatal catch锛孧CP 杈圭晫鏃犳湭鎹曡幏寮傚父锛汣LI 澶栧眰 try/catch 涔熻兘鍏滀綇 parse/寮曟搸閿欒銆傛湭鍙戠幇鍛戒护娉ㄥ叆锛堟棤 shell exec锛夋垨鏄庢樉 SQL 娉ㄥ叆鐐癸紙寮曟搸涓嶅湪鏈瀹℃煡鑼冨洿锛夈€?
+        ],
+        "verdict": "鍦ㄥ鏌ヨ寖鍥村唴锛坰rc/index.ts銆乻rc/cli.ts锛夋湭鍙戠幇鍙‘璁ょ殑鍛戒护娉ㄥ叆鎴栬竟鐣屾湭鎹曡幏寮傚父锛歁CP 宸ュ叿灞傚鍥涗釜宸ュ叿鐨?Zod 绾︽潫瀹屾暣锛屼笖姣忎釜 handler 涓?main() 鍧囨湁寮傚父鎹曡幏锛汣LI 澶栧眰 try/catch 鍙厹浣忚В鏋?寮曟搸閿欒銆備絾瀛樺湪涓ゅ涓瓑鍔犲浐缂哄彛鈥斺€擟LI 鍏ュ彛瀹屽叏缁曡繃 MCP 灞傚己鍒剁殑 Zod 鏍￠獙锛屼互鍙婃寚閽堣矾寰勬湭鍋氶亶鍘嗙害鏉燂紙浠呬緷璧?worker 绔寚绾规牎楠屽厹搴曪級銆傚彟鏈夎嫢骞蹭綆鍗卞仴澹€ч」銆傜粨璁猴細鏃犻樆鏂€у畨鍏ㄩ棶棰橈紝passed=true锛涘缓璁悎鍏ヤ笂杩板姞鍥洪」鍚庡啀瑙嗕负鐢熶骇灏辩华銆?
+      },
+      "artifacts_pointers": null,
+      "error_reason": null,
+      "created_at": 1792681532336,
+      "claimed_at": 1792681928904,
+      "completed_at": 1792682392526
+    },
+    {
+      "contract_id": "fc_1792681532323_cf6f9d99",
+      "requester_agent": "antigravity",
+      "target_agent": "workbuddy-step5",
+      "task_type": "architecture_audit",
+      "title": "[Step-5-Preview] Schema 鏍￠獙鍣ㄤ笌閲嶈瘯鐔旀柇杈圭晫瀹¤",
+      "context_summary": "璇峰鏌?src/schema-validator.ts 涓?src/engine.ts 涓?fulfillContract 鐨勯噸璇曢€昏緫锛氶獙璇佸墠 2 娆¤繑鍥?RETRY_NEEDED銆佺 3 娆¤繘鍏?VALIDATION_FAILED 鏄惁鑷唇銆?,
+      "workspace_root": "F:\\git\\FerryCat",
+      "status": "COMPLETED",
+      "is_logically_expired": false,
+      "retry_count": 0,
+      "max_retries": 2,
+      "pointers": [
+        {
+          "path": "src/schema-validator.ts",
+          "size": 1874,
+          "mtime_ms": 1792680694088,
+          "sha256": "c938836718201b2c6a63e18faf73eb6aa5cae96787277fe48c313b49fde07e25",
+          "first_line": "import AjvModule, { type ErrorObject } from 'ajv';",
+          "last_line": "}",
+          "line_range": [
+            1,
+            67
+          ]
+        },
+        {
+          "path": "src/engine.ts",
+          "size": 17056,
+          "mtime_ms": 1792680277357,
+          "sha256": "178bc32d7d63d22acadfb5c41779c8a7636c9c3a3c79bc51b28a9d9c721a09d3",
+          "first_line": "import crypto from 'node:crypto';",
+          "last_line": "}",
+          "line_range": [
+            265,
+            365
+          ]
+        }
+      ],
+      "contract_schema": {
+        "type": "object",
+        "required": [
+          "passed",
+          "edge_cases",
+          "verdict"
+        ],
+        "properties": {
+          "passed": {
+            "type": "boolean"
+          },
+          "edge_cases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "verdict": {
+            "type": "string"
+          }
+        }
+      },
+      "result_summary": "瀹¤閫氳繃锛歠ulfillContract 閲嶈瘯鐔旀柇杈圭晫鑷唇锛岄粯璁?max_retries=2 涓嬪墠 2 娆?RETRY_NEEDED銆佺 3 娆?VALIDATION_FAILED锛屼笌宸ュ崟鎻忚堪閫愬抚鍚诲悎锛涘彟璁板綍 8 鏉￠潪闃诲杈圭晫闂锛堣鏁拌涔夈€乀TL 涓嶇画鏈熴€佸苟鍙戠己 status 瀹堝崼銆佺紪璇戠紦瀛樼己澶辩瓑锛夛紝璇﹁ structured_output.edge_cases銆?,
+      "structured_output": {
+        "passed": true,
+        "edge_cases": [
+          "鑷唇鎬х‘璁わ細max_retries 榛樿鍊间负 2锛坋ngine.ts:101 DEFAULT 2锛夈€?fulfillContract 涓?nextRetryCount = retry_count + 1锛宯extRetryCount <= max_retries 鏃惰繑鍥?RETRY_NEEDED 骞舵寔涔呭寲 retry_count锛屽惁鍒欑疆缁堟€?VALIDATION_FAILED銆傞粯璁ら厤缃笅杞ㄨ抗涓猴細绗?1 娆″け璐?retry_count 0->1 RETRY_NEEDED锛岀 2 娆?1->2 RETRY_NEEDED锛岀 3 娆?2->3 瓒呰繃 2 杩涘叆 VALIDATION_FAILED锛屼笌宸ュ崟鎻忚堪鐨?鍓?2 娆?RETRY_NEEDED銆佺 3 娆?VALIDATION_FAILED'瀹屽叏涓€鑷淬€俶ax_retries=0 鏃堕娆″け璐ュ嵆缁堟€侊紝浜︽棤瓒婄晫銆?,
+          "retry_count 璇箟瀹炰负'鏍￠獙澶辫触娆℃暟'鑰岄潪'閲嶈瘯娆℃暟'锛氱粓鎬佹椂鍐欏叆 retry_count = max_retries + 1锛堥粯璁?3锛夛紝瓒呭嚭 max_retries 涓婄晫銆傝嫢 inspect 鎴栨秷璐规柟鍋囪 retry_count <= max_retries 璇ヤ笉鍙樺紡琚墦鐮达紱RETRY_NEEDED 娑堟伅 'attempt 1 of 2 retries' 鎺緸涔熷惈绯婏紙瀹為檯鍏?3 娆℃彁浜ゆ満浼氾細棣栨 + 2 娆￠噸璇曞弽棣?+ 1 娆＄粓鎬侊級銆?,
+          "閲嶈瘯涓嶅欢闀挎墽琛?TTL锛歍TL 浠ラ娆?claimed_at 涓哄熀鍑嗗湪姣忔 fulfill 鏃舵鏌ワ紙engine.ts:344锛夛紝閲嶈瘯鍏变韩鍚屼竴 exec_ttl_sec 绐楀彛涓斾笉缁湡銆傛帓鏌ヨ€楁椂杈冮暱鐨?agent 鍙兘鍦ㄩ噸璇曢厤棰濈敤灏藉墠鍏堣缃负 TIMED_OUT 缁堟€侊紝鍚庣画 fulfill 鐩存帴鎶?'expected status CLAIMED' 閿欒鑰岄潪鎷垮埌 validation_errors銆?,
+          "RETRY_NEEDED 鍒嗘敮鐨?UPDATE 浠呮湁 WHERE id = ?銆佹棤 status = 'CLAIMED' 瀹堝崼锛氬苟鍙?fulfill 鎴?TTL 杩囨湡鍚庣殑杩熷埌 fulfill 鍙兘瀵瑰凡缁堟€侊紙VALIDATION_FAILED/TIMED_OUT锛夊悎鍚岀户缁帹楂?retry_count锛堜笉浼氭敼鍥炵姸鎬侊紝浣嗚鏁板け鐪燂紝inspect 缁撴灉璇锛夈€?,
+          "COMPLETED 鍒嗘敮鐨?UPDATE 铏芥湁 AND status = 'CLAIMED' 瀹堝崼浣嗘湭妫€鏌?result.changes锛氫袱涓苟鍙?fulfill 鍧囬€氳繃琛岀骇妫€鏌ユ椂锛岀浜屼釜璋冪敤瀹為檯鍐欏叆琚潤榛樿烦杩囷紙0 琛屽尮閰嶏級锛屽嵈浠嶈繑鍥?ok:true / status:'COMPLETED'锛岃皟鐢ㄦ柟璇互涓轰氦鍗曟垚鍔熴€?,
+          "schema-validator.ts 姣忔鏍￠獙閮介噸鏂?ajv.compile(schema)锛屾棤缂栬瘧缂撳瓨锛涢噸璇曡矾寰勪細瀵瑰悓涓€ schema 閲嶅缂栬瘧锛屽ぇ schema 涓嬫湁鎬ц兘寮€閿€銆傚缓璁寜 schema 搴忓垪鍖栧瓧绗︿覆鍋氱紪璇戠粨鏋滅紦瀛橈紙schema 姣忔鐢?JSON.parse 浜х敓鏂板璞★紝鎸夊璞″紩鐢ㄧ紦瀛樻棤鏁堬級銆?,
+          "validateContractOutput 鐨勫墠缃被鍨嬫鏌ヤ腑 typeof [] === 'object'锛屾暟缁勬暟鎹彲閫氳繃鍓嶇疆妫€鏌ヨ繘鍏?Ajv锛涙槸鍚︽渶缁堟嫆缁濆彇鍐充簬 schema 鏄惁鏄惧紡澹版槑 type:'object'銆傛湰宸ュ崟 schema 鏈０鏄?type锛岃嫢 structured_output 涓烘暟缁勪細琚?Ajv 鍥犵己灏?required 灞炴€ф嫆缁濓紝琛屼负姝ｇ‘浣嗕緷璧栭殣寮忚涓恒€?,
+          "errors 缁熶竴 slice(0,10) 鎴柇锛歛llErrors:true 涓嬮敊璇垪琛ㄥ彲鑳借鎴柇锛孷ALIDATION_FAILED 鐨?error_reason 鎽樿鍙寘鍚墠 10 鏉★紝澶嶆潅 schema 涓嬫帓閿欎俊鎭笉瀹屾暣銆?
+        ],
+        "verdict": "瀹¤閫氳繃銆傛牳蹇冮棶棰?鍓?2 娆¤繑鍥?RETRY_NEEDED銆佺 3 娆¤繘鍏?VALIDATION_FAILED 鏄惁鑷唇'鐨勭瓟妗堜负锛氳嚜娲姐€俥ngine.ts fulfillContract 鐨勯噸璇曠啍鏂竟鐣岀敤 nextRetryCount = retry_count + 1 涓?max_retries 姣旇緝瀹炵幇锛屽垽瀹氫笌鐘舵€佽縼绉婚€昏緫姝ｇ‘锛?= max_retries 鏃惰繑鍥?RETRY_NEEDED 骞跺皢璁℃暟鎸佷箙鍖栵紙閲嶈瘯鍙法杩涚▼璋冪敤绱Н锛夛紝瓒呰繃鍗崇疆缁堟€?VALIDATION_FAILED 骞惰褰?error_reason 涓?completed_at锛屼笉鍐嶆帴鍙楀悗缁?fulfill锛坰tatus 妫€鏌ユ嫤鎴級銆傞粯璁?max_retries=2 涓嬩笌宸ュ崟鎻忚堪鐨勪笁娈靛紡杞ㄨ抗閫愬抚鍚诲悎锛沵ax_retries=0 鐨勯€€鍖栨儏褰害姝ｇ‘銆俆TL 妫€鏌ュ厛浜?schema 鏍￠獙锛岃繃鏈熷悎鍚屼笉浼氭秷鑰楅噸璇曢厤棰濓紝椤哄簭鍚堢悊銆備笂杩?edge_cases 鍧囦负闈為樆濉炵殑杈圭晫鍋ュ．鎬ч棶棰橈紙璁℃暟璇箟鍛藉悕銆乀TL 涓嶉殢閲嶈瘯缁湡銆佺己 status 瀹堝崼鐨勫苟鍙?UPDATE銆佹湭妫€鏌?changes銆佺紪璇戠紦瀛樼己澶便€侀敊璇埅鏂級锛屼笉褰卞搷閲嶈瘯鐔旀柇璁℃暟閫昏緫鏈韩鐨勮嚜娲芥€э紝寤鸿鍚庣画鐗堟湰淇銆?
+      },
+      "artifacts_pointers": null,
+      "error_reason": null,
+      "created_at": 1792681532323,
+      "claimed_at": 1792681871352,
+      "completed_at": 1792682225479
+    },
+    {
+      "contract_id": "fc_1792681532295_a7c57f16",
+      "requester_agent": "antigravity",
+      "target_agent": "workbuddy",
+      "task_type": "code_review",
+      "title": "[Deepseek-V4.1-Flash] FerryCat 鐘舵€佹満涓庢寚绾归槻鐩插鏍稿績璧版煡",
+      "context_summary": "璇峰鏌?src/engine.ts 涓?src/fingerprint.ts锛氶獙璇?1) changes === 1 鍘熷瓙鎶㈠崰锛?) 瀛樺湪鎬?>size->鍏ㄦ枃sha256 鏍￠獙椤哄簭锛?) 鍙岄樁娈?TTL 鍏堣鍚庡啓娓呯悊銆?,
+      "workspace_root": "F:\\git\\FerryCat",
+      "status": "COMPLETED",
+      "is_logically_expired": false,
+      "retry_count": 0,
+      "max_retries": 2,
+      "pointers": [
+        {
+          "path": "src/engine.ts",
+          "size": 17056,
+          "mtime_ms": 1792680277357,
+          "sha256": "178bc32d7d63d22acadfb5c41779c8a7636c9c3a3c79bc51b28a9d9c721a09d3",
+          "first_line": "import crypto from 'node:crypto';",
+          "last_line": "}",
+          "line_range": [
+            1,
+            412
+          ]
+        },
+        {
+          "path": "src/fingerprint.ts",
+          "size": 5407,
+          "mtime_ms": 1792680183158,
+          "sha256": "3f3f6a89e5ad4b379351daed4d21e680e22c5dafc4329aa1bcea86b2e5c44371",
+          "first_line": "import crypto from 'node:crypto';",
+          "last_line": "}",
+          "line_range": [
+            1,
+            165
+          ]
+        }
+      ],
+      "contract_schema": {
+        "type": "object",
+        "required": [
+          "passed",
+          "p0_issues",
+          "verdict"
+        ],
+        "properties": {
+          "passed": {
+            "type": "boolean"
+          },
+          "p0_issues": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "verdict": {
+            "type": "string"
+          }
+        }
+      },
+      "result_summary": "璧版煡 src/engine.ts (515琛? 涓?src/fingerprint.ts (179琛?锛屽叏鏂囧凡璇伙紝鏈緷璧?line_range 瑁佸壀銆備氦鍗曞墠鍏堟牳瀵规寚绾癸細涓ゆ枃浠?sha256 / size / mtime 涓夐」涓庢寚閽堝畬鍏ㄤ竴鑷达紝纭闈為檲鏃ф寚閽堬紝鏈涓嶆槸鐩插銆備笁鏉℃柇瑷€鍏ㄩ儴鎴愮珛锛歝hanges===1 鍘熷瓙鎶㈠崰鎴愮珛锛堟湁鍙?OS 杩涚▼绔炰簤娴嬭瘯璇佹嵁锛夛紱瀛樺湪鎬р啋size鈫掑叏鏂?sha256 椤哄簭鎴愮珛涓?mtime 涓嶅弬涓庢嫆缁濓紙鏈夌瓑闀块/涓?灏炬敼鍐欐祴璇曡瘉鎹級锛涘弻闃舵 TTL 鍏堣鍚庡啓娓呯悊鎴愮珛锛圫ELECT COUNT 鍚庢寜 c>0 鎵?UPDATE锛岃皳璇嶄竴鑷存晠骞傜瓑锛夈€侾0 鏃犮€侾1 涓ら」锛氳棰嗘垚鍔熷悗鏃犲紓甯稿洖婊氾紝寮傚父浼氭妸鍚堝悓鍗℃鍦?CLAIMED锛沠ulfill 涓嶉噸鏍￠獙鎸囩汗涓斾笉钀藉簱鎵€瀹?sha256锛宑laim鈫抮ead 瀛樺湪 TOCTOU 绐楀彛銆侾2 浜旈」锛歝hanges 绫诲瀷渚濊禆銆亀orker 渚ф湭澶嶆柦璺緞榛戝悕鍗曘€丳OINTER_STALE 鐢?return 鑰岄潪 continue銆侀潪鐬€佸け璐ヤ篃閲嶈瘯涓?Atomics.wait 闃诲涓荤嚎绋嬨€乺etry 鏂囨 off-by-one銆傚彟鍙戠幇鏈伐鍗曟寚閽?line_range 澹版槑涓庡疄闄呰鏁颁笉绗︼紙412/165 vs 515/179锛夈€?,
+      "structured_output": {
+        "passed": true,
+        "p0_issues": [],
+        "verdict": "涓夋潯鏂█鍏ㄩ儴鎴愮珛锛屾棤 P0銆傛柇瑷€1 changes===1 鍘熷瓙鎶㈠崰锛歝laimStmt 鐨?WHERE 鍚屾椂閿?id 涓?status='SUBMITTED'锛坋ngine.ts:253-257锛夛紝engine.ts:262 浠?changes!==1 鍒ゅ畾骞?continue 涓嬩竴涓€欓€夛紱test/run-all.ts:49 鐢ㄤ袱涓嫭绔?OS 杩涚▼鍦ㄥ悓涓€ barrier 鏃堕棿鎴崇珵浜夛紝鏂█鎭板ソ 1 涓?CLAIMED + 1 涓?has_task=false锛岃娴嬭瘯鏄湡瀹炲杩涚▼鑰岄潪鍚岃繘绋嬪苟鍙戯紝璇佹嵁鍏呭垎銆傛柇瑷€2 鏍￠獙椤哄簭锛歷erifySingleRun 涓ユ牸鎸?existsSync(122)鈫抯tat.size(133)鈫抮eadFileSync 鍏ㄩ噺 sha256(142-144) 閫掕繘锛宻ize 鍛戒腑鍗冲揩閫熷け璐ワ紱mtime_ms 浠呴殢鎸囩汗璁板綍銆佹槑纭笉鍙備笌鎷掔粷锛?41 琛屾敞閲婁笌瀹炵幇涓€鑷达級锛泃est2 鐨?A/B/C 鐢ㄧ瓑闀块/涓?灏炬敼鍐欒瘉鏄庢槸鍏ㄩ噺鍝堝笇鑰岄潪閲囨牱銆傛柇瑷€3 鍙岄樁娈?TTL 鍏堣鍚庡啓锛歴weepExpiredContractsIfNeeded(202-225) 鍏?SELECT COUNT锛屼粎褰?c>0 鎵嶆墽琛?UPDATE锛岄伩鍏嶆瘡娆?poll 閮芥姠鍐欓攣锛汼ELECT 涓?UPDATE 璋撹瘝瀹屽叏涓€鑷达紝涓よ€呬箣闂存棤浜嬪姟浣嗗箓绛夛紝鍙︿竴杩涚▼鎶㈠厛缃?TIMED_OUT 鏃舵湰杩涚▼ UPDATE 鍛戒腑 0 琛岋紝鏃犲銆侾1-a 璁ら鏃犲洖婊氾細L261 瀹屾垚 claim 鍚庯紝JSON.parse(candidate.pointers_json)(268)銆乫s.statSync(130)銆乫s.readFileSync(142) 浠讳竴鎶涢敊锛圗NOENT/EACCES/鎸囬拡 JSON 鎹熷潖锛夐兘浼氬啋娉″嚭 pollNextTask 鐩磋嚦 CLI 閫€鍑虹爜 1锛屾鏃跺悎鍚屽凡琚疆 CLAIMED 鍗存棤浜烘寔鏈夛紝鍙兘绛?exec_ttl 鍒版湡鐢变笅涓€娆?poll 鐨勬噿娓呯悊鍏滃簳锛屾湡闂磋鍚堝悓瀵?mesh 涓嶅彲瑙併€傚缓璁?claim 鍚?try/catch锛屽け璐ユ椂鍥炴粴涓?SUBMITTED 鎴栫洿鎺ョ疆 POINTER_STALE 骞?continue銆侾1-b 缁撹鏈笌鍐呭缁戝畾锛氭寚绾瑰彧鍦?claim 鏃舵牎楠岋紝worker 鏄牎楠岄€氳繃涔嬪悗鎵嶄粠纾佺洏璇绘枃浠讹紝claim鈫抮ead 涔嬮棿瀛樺湪 TOCTOU 绐楀彛锛沠ulfillContract 鏃笉閲嶈窇 verifySingleRun锛屼篃鏈妸鏈鎵€瀹＄殑 sha256 闆嗗悎鍐欏叆 structured_output 鎴?artifacts_pointers銆傜粨鏋滄槸 COMPLETED 璁板綍鏃犳硶鑷瘉瀹＄殑鏄摢涓€浠藉瓧鑺傦紝杩欐槸'闃茬洸瀹?鍞竴鐨勫疄璐ㄧ己鍙ｃ€傚缓璁?fulfill 鏃堕噸鏍￠獙骞跺湪缁撴灉涓浐鍖?sha256锛屾垨灏嗛噸鏍￠獙澶辫触鏄犲皠涓?POINTER_STALE銆侾2-a changes 绫诲瀷鑰﹀悎锛歯ode:sqlite 鐨?run().changes 榛樿鏄?number锛屽疄娴?setReadBigInts(true) 鍚庤繑鍥?bigint锛屾鏃?1n!==1 鎭掔湡锛屽叏閮ㄥ悎鍚屼細琚潤榛樺垽涓?琚苟鍙?worker 鎶㈠崰'锛宮esh 鍋滄娲惧崟涓旈敊璇俊鎭叿鏈夎瀵兼€с€傚缓璁敼涓?Number(updateResult.changes)!==1 鎴栨樉寮忔柇瑷€绫诲瀷銆侾2-b 榛戝悕鍗曞彧鍦ㄤ竴渚э細assertSafePointerPath 浠呭湪 computeFingerprints(dispatch 渚?璋冪敤锛寁erifySingleRun 鐢ㄨ８ path.resolve(workspaceRoot, fp.path)(119)锛屾湭澶嶆柦榛戝悕鍗曚笌瓒婄晫妫€鏌ワ紱鍏变韩鎴栧彲琚啓鍏ョ殑 DB 涓殑鎸囩汗鍙湪 worker 渚ц鍙栧伐浣滃尯澶栨枃浠跺苟瀵规晱鎰熸枃浠朵骇鐢?size/sha256 渚т俊閬撱€侾2-c 闃熷ご闃诲涓€杞細verification.valid 涓?false 鏃剁敤 return(285) 鑰岄潪 continue锛岄槦澶撮檲鏃у悎鍚屼細璁╁悓鎵?LIMIT 5 涓悗缁彲璁ら鍚堝悓鏈疆鎷夸笉鍒帮紱璇ュ悎鍚屽凡杞?POINTER_STALE锛屼笅涓€杞?poll 鍙甯稿彇鍒帮紝鏁呬粎鎹熷け涓€杞紝浣嗚皟鐢ㄦ柟鏄撴妸 has_task:false 褰撲綔闃熷垪绌鸿€岃繘鍏ョ┖闂层€侾2-d 閲嶈瘯绛栫暐杩囧锛歷erifyFingerprintsWithRetry 瀵?FILE_MISSING銆丼IZE_MISMATCH 鍚屾牱閲嶈瘯锛岃繖涓ょ被闈炵灛鎬侊紱涓?sleepSync 鐢?Atomics.wait 闃诲涓荤嚎绋?150ms锛屽湪 MCP stdio server 鍦烘櫙浼氳繛甯﹂樆濉炲叾浠?tool 璋冪敤銆侾2-e 鏂囨 off-by-one锛歮ax_retries=2 鏃剁 2 娆″け璐ヤ粛杩斿洖'灏濊瘯 2/2 娆￠噸璇曪紝璇蜂慨姝ｅ悗鍐嶆璋冪敤'锛屼絾绗?3 娆′粛浼氳鎺ュ彈锛坱est3 鏂█鐨勬鏄?2 娆?RETRY_NEEDED 鍚庣 3 娆?VALIDATION_FAILED锛夛紝鏂囨涓庡疄闄呭彲鐢ㄦ鏁颁笉绗︺€傚彟锛氭湰宸ュ崟 pointers 澹版槑鐨?line_range 涓?[1,412] 涓?[1,165]锛屽疄闄呮枃浠朵负 515 琛屼笌 179 琛岋紱line_range 鐢辫姹傛柟浼犲叆銆佷粠涓嶄笌瀹為檯琛屾暟鏍￠獙锛岃嫢 worker 渚濇嵁瀹冭鍓鏌ヨ寖鍥翠細婕忓灏鹃儴绾?100 琛岋紝鏈宸插叏鏂囪蛋鏌ヤ笉鍙楀奖鍝嶏紝浣嗗缓璁?dispatch 渚ф牎楠?line_range 涓婄晫鎴栫洿鎺ョ敱鏈嶅姟绔绠椼€傜粨璁猴細涓夋潯鏂█鍙互鏀捐锛汸1 涓ら」寤鸿鍙戠増鍓嶄慨澶嶏紝鍏朵腑 P1-b 鐩存帴鍏崇郴浜у搧瀵瑰涓诲紶銆?
+      },
+      "artifacts_pointers": null,
+      "error_reason": null,
+      "created_at": 1792681532295,
+      "claimed_at": 1792681837350,
+      "completed_at": 1792682078901
+    }
+  ]
+}
