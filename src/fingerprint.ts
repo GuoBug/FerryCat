@@ -68,6 +68,9 @@ export function assertSafePointerPath(workspaceRoot: string, rawPath: string): s
       if (err instanceof SecurityPolicyError) {
         throw err;
       }
+      throw new SecurityPolicyError(
+        `Pointer rejected: failed to physically resolve path "${rawPath}" safely (${(err as Error).message}).`
+      );
     }
   }
 
@@ -78,7 +81,7 @@ export function computeFullFileSha256(buffer: Buffer): string {
   return crypto.createHash('sha256').update(buffer).digest('hex');
 }
 
-function extractFirstAndLastLine(content: string): {
+function extractFirstAndLastLine(content: string, maxLen: number = 48): {
   first_line: string;
   last_line: string;
   total_lines: number;
@@ -89,8 +92,8 @@ function extractFirstAndLastLine(content: string): {
     return { first_line: '', last_line: '', total_lines: lines.length };
   }
   return {
-    first_line: nonEmpty[0].slice(0, 120),
-    last_line: nonEmpty[nonEmpty.length - 1].slice(0, 120),
+    first_line: nonEmpty[0].slice(0, maxLen),
+    last_line: nonEmpty[nonEmpty.length - 1].slice(0, maxLen),
     total_lines: lines.length,
   };
 }

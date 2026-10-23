@@ -6,3 +6,4 @@ dist/
 .ferrycat/
 .DS_Store
 *.log
+.backlog/

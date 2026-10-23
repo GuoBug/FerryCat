@@ -241,101 +241,101 @@ export class FerryCatEngine {
     // Step 1: Lazy timeout sweep (SELECT first to avoid write lock contention)
     this.sweepExpiredContractsIfNeeded(nowMs);
 
-    // Step 2: Fetch candidate SUBMITTED contracts for this agent
-    const candidates = this.db
-      .prepare(
-        `SELECT * FROM contracts
-         WHERE target_agent = ? AND status = 'SUBMITTED'
-         ORDER BY created_at ASC
-         LIMIT 5`
-      )
-      .all(agentId) as unknown as ContractRow[];
-
-    if (candidates.length === 0) {
-      return {
-        has_task: false,
-        message: `No pending SUBMITTED contracts for agent "${agentId}".`,
-      };
-    }
-
+    // Step 2: Fetch and evaluate candidate SUBMITTED contracts with continuous pagination
     const claimStmt = this.db.prepare(
       `UPDATE contracts
        SET status = 'CLAIMED', claimed_at = ?
        WHERE id = ? AND status = 'SUBMITTED'`
     );
 
+    const candidatesStmt = this.db.prepare(
+      `SELECT * FROM contracts
+       WHERE target_agent = ? AND status = 'SUBMITTED'
+       ORDER BY created_at ASC
+       LIMIT 10`
+    );
+
     let lastStaleError: PollNextTaskResult['stale_error'] | undefined;
+    let anyCandidatesSeen = false;
 
-    for (const candidate of candidates) {
-      // Step 3: Atomic optimistic lock preemption
-      const updateResult = claimStmt.run(nowMs, candidate.id);
-      if (Number(updateResult.changes) !== 1) {
-        // Preempted by another concurrent worker process; try next candidate
-        continue;
+    while (true) {
+      const candidates = candidatesStmt.all(agentId) as unknown as ContractRow[];
+      if (candidates.length === 0) {
+        break;
       }
+      anyCandidatesSeen = true;
 
-      // Step 4: Verify file fingerprints on disk (with 150ms transient write retry & exception guard)
-      let fingerprints: FileFingerprint[];
-      let verification;
-      try {
-        fingerprints = JSON.parse(candidate.pointers_json) as FileFingerprint[];
-        verification = verifyFingerprintsWithRetry(
-          candidate.workspace_root,
-          fingerprints,
-          this.fingerprintRetryDelayMs
-        );
-      } catch (err) {
-        const errMsg = `UNEXPECTED_FS_ERROR: ${err instanceof Error ? err.message : String(err)}`;
-        this.db
-          .prepare(
-            `UPDATE contracts SET status = 'POINTER_STALE', error_reason = ? WHERE id = ?`
-          )
-          .run(errMsg, candidate.id);
-        lastStaleError = {
-          contract_id: candidate.id,
-          reason: 'UNEXPECTED_FS_ERROR',
-          message: `Contract "${candidate.id}" marked POINTER_STALE due to filesystem error (${errMsg}).`,
+      for (const candidate of candidates) {
+        // Step 3: Atomic optimistic lock preemption
+        const updateResult = claimStmt.run(nowMs, candidate.id);
+        if (Number(updateResult.changes) !== 1) {
+          // Preempted by another concurrent worker process; try next candidate
+          continue;
+        }
+
+        // Step 4: Verify file fingerprints on disk (with 150ms transient write retry & exception guard)
+        let fingerprints: FileFingerprint[];
+        let verification;
+        try {
+          fingerprints = JSON.parse(candidate.pointers_json) as FileFingerprint[];
+          verification = verifyFingerprintsWithRetry(
+            candidate.workspace_root,
+            fingerprints,
+            this.fingerprintRetryDelayMs
+          );
+        } catch (err) {
+          const errMsg = `UNEXPECTED_FS_ERROR: ${err instanceof Error ? err.message : String(err)}`;
+          this.db
+            .prepare(
+              `UPDATE contracts SET status = 'POINTER_STALE', error_reason = ? WHERE id = ?`
+            )
+            .run(errMsg, candidate.id);
+          lastStaleError = {
+            contract_id: candidate.id,
+            reason: 'UNEXPECTED_FS_ERROR',
+            message: `Contract "${candidate.id}" marked POINTER_STALE due to filesystem error (${errMsg}).`,
+          };
+          continue;
+        }
+
+        if (!verification.valid) {
+          const errorReason = `${verification.reason}: ${verification.detail}`;
+          this.db
+            .prepare(
+              `UPDATE contracts
+               SET status = 'POINTER_STALE', error_reason = ?
+               WHERE id = ?`
+            )
+            .run(errorReason, candidate.id);
+
+          lastStaleError = {
+            contract_id: candidate.id,
+            reason: verification.reason!,
+            message: `Contract "${candidate.id}" rejected as POINTER_STALE (${errorReason}). Please ask requester "${candidate.requester_agent}" to re-dispatch with fresh file fingerprints.`,
+          };
+          continue;
+        }
+
+        return {
+          has_task: true,
+          status: 'CLAIMED',
+          contract: {
+            contract_id: candidate.id,
+            requester_agent: candidate.requester_agent,
+            target_agent: candidate.target_agent,
+            task_type: candidate.task_type,
+            title: candidate.title,
+            context_summary: candidate.context_summary,
+            workspace_root: candidate.workspace_root,
+            pointers: fingerprints,
+            contract_schema: candidate.contract_schema_json
+              ? (JSON.parse(candidate.contract_schema_json) as Record<string, unknown>)
+              : null,
+            claimed_at: nowMs,
+            exec_ttl_sec: candidate.exec_ttl_sec,
+          },
         };
-        continue;
       }
-
-      if (!verification.valid) {
-        const errorReason = `${verification.reason}: ${verification.detail}`;
-        this.db
-          .prepare(
-            `UPDATE contracts
-             SET status = 'POINTER_STALE', error_reason = ?
-             WHERE id = ?`
-          )
-          .run(errorReason, candidate.id);
-
-        lastStaleError = {
-          contract_id: candidate.id,
-          reason: verification.reason!,
-          message: `Contract "${candidate.id}" rejected as POINTER_STALE (${errorReason}). Please ask requester "${candidate.requester_agent}" to re-dispatch with fresh file fingerprints.`,
-        };
-        continue;
-      }
-
-      return {
-        has_task: true,
-        status: 'CLAIMED',
-        contract: {
-          contract_id: candidate.id,
-          requester_agent: candidate.requester_agent,
-          target_agent: candidate.target_agent,
-          task_type: candidate.task_type,
-          title: candidate.title,
-          context_summary: candidate.context_summary,
-          workspace_root: candidate.workspace_root,
-          pointers: fingerprints,
-          contract_schema: candidate.contract_schema_json
-            ? (JSON.parse(candidate.contract_schema_json) as Record<string, unknown>)
-            : null,
-          claimed_at: nowMs,
-          exec_ttl_sec: candidate.exec_ttl_sec,
-        },
-      };
     }
 
     if (lastStaleError) {
@@ -348,7 +348,9 @@ export class FerryCatEngine {
 
     return {
       has_task: false,
-      message: `All candidate contracts for "${agentId}" were preempted by concurrent workers.`,
+      message: anyCandidatesSeen
+        ? `All candidate contracts for "${agentId}" were preempted by concurrent workers.`
+        : `No pending SUBMITTED contracts for agent "${agentId}".`,
     };
   }
 

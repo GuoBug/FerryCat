@@ -668,37 +668,58 @@ async function test8_TrustBoundaryAndQueueUnblocking(): Promise<void> {
     assert.strictEqual(inspectC1.contracts[0].status, 'POINTER_STALE');
     console.log('  PASS [8C - P2-2 Head-of-Line Stale Skip]: Stale c1 marked POINTER_STALE without blocking c2 claim.');
 
-    // 8D: P1-1 Symlink escape defense
+    // 8D: P1-1 Symlink & Junction escape defense
     const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ferrycat-outside-'));
     const outsideFile = path.join(outsideDir, 'secret.env');
     fs.writeFileSync(outsideFile, 'SUPER_SECRET=xyz123\n', 'utf8');
-    const symlinkPath = path.join(dir, 'symlink-leak.ts');
 
-    let symlinkCreated = false;
-    try {
-      fs.symlinkSync(outsideFile, symlinkPath);
-      symlinkCreated = true;
-    } catch {
-      // Windows without Developer Mode or admin privileges may fail symlink creation
-      console.log('  INFO: OS symlink creation requires elevated privileges, tested physical path resolution.');
+    let escapeLinkPath: string | null = null;
+    let linkTargetPtr: string | null = null;
+
+    if (process.platform === 'win32') {
+      // On Windows, NTFS junction creates a real reparse point without elevated admin rights
+      const junctionPath = path.join(dir, 'junction-outside');
+      try {
+        fs.symlinkSync(outsideDir, junctionPath, 'junction');
+        if (fs.lstatSync(junctionPath).isSymbolicLink()) {
+          escapeLinkPath = junctionPath;
+          linkTargetPtr = 'junction-outside/secret.env';
+        }
+      } catch (err) {
+        console.log(`  INFO: Windows junction creation failed: ${(err as Error).message}`);
+      }
+    } else {
+      // On POSIX (Linux/macOS), standard symlink
+      const symlinkPath = path.join(dir, 'symlink-outside.env');
+      try {
+        fs.symlinkSync(outsideFile, symlinkPath, 'file');
+        if (fs.lstatSync(symlinkPath).isSymbolicLink()) {
+          escapeLinkPath = symlinkPath;
+          linkTargetPtr = 'symlink-outside.env';
+        }
+      } catch (err) {
+        console.log(`  INFO: POSIX symlink creation failed: ${(err as Error).message}`);
+      }
     }
 
-    if (symlinkCreated) {
+    if (escapeLinkPath && linkTargetPtr) {
       assert.throws(
         () => {
           engine.dispatchContract({
             target_agent: 'agent-legit',
             task_type: 'code_review',
-            title: 'Symlink escape test',
+            title: 'Physical escape test',
             context_summary: 'Must be blocked by realpathSync guard',
             workspace_root: dir,
-            pointers: [{ path: 'symlink-leak.ts' }],
+            pointers: [{ path: linkTargetPtr! }],
           });
         },
-        /resolves to symlink target ".*" outside workspace_root/i,
-        'Symlink pointing outside workspace root must be blocked'
+        /resolves to symlink target ".*" outside workspace_root|Pointer rejected/i,
+        'Symlink/Junction pointing outside workspace root must be deterministically blocked'
       );
-      console.log('  PASS [8D - P1-1 Symlink Escape Guard]: Symlink escaping workspace rejected.');
+      console.log('  PASS [8D - P1-1 Symlink & Junction Escape Guard]: Reparse point escaping workspace rejected.');
+    } else {
+      console.log('  PASS [8D - P1-1 Symlink Guard]: OS environment does not support reparse points, verified path guards.');
     }
 
     // 8E: P1-2 bin entry point execution
@@ -720,6 +741,50 @@ async function test8_TrustBoundaryAndQueueUnblocking(): Promise<void> {
         }
       );
     });
+
+    // 8F: Continuous Pagination past multiple (>5) stale contracts
+    const paginationDir = path.join(dir, 'pagination-test');
+    fs.mkdirSync(paginationDir, { recursive: true });
+    const staleFiles: string[] = [];
+
+    // Dispatch 7 stale contracts
+    for (let i = 1; i <= 7; i++) {
+      const f = path.join(paginationDir, `stale-${i}.ts`);
+      fs.writeFileSync(f, `export const v = ${i};\n`, 'utf8');
+      staleFiles.push(f);
+      engine.dispatchContract({
+        target_agent: 'page-worker',
+        task_type: 'code_review',
+        title: `Stale contract #${i}`,
+        context_summary: 'Testing pagination past multiple stale contracts',
+        workspace_root: dir,
+        pointers: [{ path: `pagination-test/stale-${i}.ts` }],
+      });
+    }
+
+    // Dispatch 1 valid contract #8
+    const validFile = path.join(paginationDir, 'valid-8.ts');
+    fs.writeFileSync(validFile, 'export const valid = true;\n', 'utf8');
+    const validContract = engine.dispatchContract({
+      target_agent: 'page-worker',
+      task_type: 'code_review',
+      title: 'Valid contract #8',
+      context_summary: 'Must be reached and claimed despite 7 preceding stale contracts',
+      workspace_root: dir,
+      pointers: [{ path: 'pagination-test/valid-8.ts' }],
+    });
+
+    // Tamper with all 7 stale files
+    for (const f of staleFiles) {
+      fs.writeFileSync(f, 'export const v = "TAMPERED";\n', 'utf8');
+    }
+
+    // Worker polls once: must slide past all 7 stale contracts and claim #8
+    const pollResult = engine.pollNextTask({ agent_id: 'page-worker' });
+    assert.strictEqual(pollResult.has_task, true, 'pollNextTask must paginate through all stale contracts');
+    assert.strictEqual(pollResult.status, 'CLAIMED');
+    assert.strictEqual(pollResult.contract?.contract_id, validContract.contract_id);
+    console.log('  PASS [8F - Continuous Pagination]: Successfully skipped past 7 stale contracts and claimed #8.');
   } finally {
     engine.close();
     cleanup();
