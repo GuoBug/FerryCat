@@ -62,6 +62,10 @@ export interface ContractRow {
   extend_count: number;
   /** Number of times the contract was released back to the queue. */
   release_count: number;
+  /** Number of fulfill-time TOCTOU mismatch strikes (contract-level, max 1 soft warning before POINTER_STALE). */
+  toctou_strike: number;
+  /** Preserved submission payload if fulfill transitions to terminal POINTER_STALE. */
+  salvaged_result_json?: string | null;
 }
 
 export interface DispatchContractInput {
@@ -135,7 +139,37 @@ export interface FulfillContractResult {
   status: 'COMPLETED' | 'RETRY_NEEDED' | 'VALIDATION_FAILED' | 'TIMED_OUT' | 'POINTER_STALE';
   retry_count: number;
   max_retries: number;
+  toctou_strike?: number;
+  max_toctou_strikes?: number;
+  dirty_files?: Array<{
+    path: string;
+    reason: string;
+    detail: string;
+  }>;
   validation_errors?: string[];
+  message: string;
+}
+
+export interface VerifyContractInput {
+  contract_id: string;
+  agent_id?: string;
+}
+
+export interface VerifyContractResult {
+  ok: boolean;
+  valid: boolean;
+  contract_id: string;
+  status: ContractStatus;
+  /** True only when status === 'CLAIMED'; file validity alone does not imply fulfillability. */
+  fulfillable?: boolean;
+  target_agent: string;
+  toctou_strike: number;
+  max_toctou_strikes: number;
+  dirty_files: Array<{
+    path: string;
+    reason: string;
+    detail: string;
+  }>;
   message: string;
 }
 
@@ -185,6 +219,7 @@ export interface FailContractResult {
 
 export interface InspectMeshStateInput {
   contract_id?: string;
+  target_agent?: string;
   status?: ContractStatus | 'ACTIVE' | 'ALL';
   limit?: number;
 }

@@ -16,13 +16,25 @@
 
 ---
 
-## Phase A: 生命周期与执行模型纠偏 (已完成，待发版)
+## Phase A: 生命周期与执行模型纠偏 (v0.2.0 — 已完成)
 
 - [x] **FC-A01（分级默认执行期 TTL）**：`code_review` / `architecture_audit` 默认 1800s，`implementation` / `test_generation` 默认 300s；派单显式传入的 `exec_ttl_sec` 优先。
-- [x] **FC-A02（`release_contract` 退回）**：仅持单方可调用，`CLAIMED → SUBMITTED` 回到队尾并重新计算排队窗口；清零 `retry_count` / `extend_count`；单张工单最多退回 3 次。
+- [x] **FC-A02（`release_contract` 退回）**：仅持单方可调用，`CLAIMED → SUBMITTED` 回到队尾并重新计算排队窗口；清零 `extend_count`，保留 `retry_count`（熔断配额）；单张工单最多退回 3 次。
 - [x] **FC-A03（`extend_ttl` 心跳续期）**：仅持单方可调用，重置 `claimed_at`；每位持单者最多续期 5 次，超过 `created_at + 4 × queue_ttl_sec` 后拒绝续期。`RETRY_NEEDED` 同样会重置执行窗口。
 - [x] **FC-A04（`fail_contract` 与 `FAILED` 终态）**：仅持单方可调用，必须携带失败原因；`worker --exec` 子进程非零退出时自动置为 `FAILED`。
 - [x] **FC-A05（原地表结构迁移）**：增量新增 `queued_at` / `extend_count` / `release_count` 列；旧版宿主写入的行（`queued_at IS NULL`）仍可被正常认领。
+
+---
+
+## Phase B: CLI 人体工程学、开发者体验与 TOCTOU 软失败缓冲 (v0.3.0 — 已完成)
+
+- [x] **FC-B01（全局与子命令标准 `--help` / `--version`）**：全量 9 个子命令的分层帮助树体系，包含参数说明、模式枚举与典型示例。
+- [x] **FC-B02（Stdin 管道 Payload 支持与 BOM 兼容）**：支持 `--file -`、位置参数 `-` 以及自动探测 stdin 管道，并透明去除 UTF-8 BOM。
+- [x] **FC-B03（Inspect ASCII 表格终端视图与 Target 过滤）**：默认以高可读性 ASCII 表格输出，支持 `--target <agent>` 过滤，保留 `--json` / `--format=json` 原始输出。
+- [x] **FC-B04（Worker 三模式收敛与脚本文件执行）**：明确收敛 `--mode=watch|claim|exec` 语义，并提供 `--exec-file <script>` 直接执行脚本文件，杜绝 Shell 引号转义灾难。
+- [x] **FC-B05（结构化友好 Zod 错误格式化）**：消灭 SQLite 裸错误堆栈泄漏，提供字段级定位与对应的 `--help` 提示。
+- [x] **FC-B06（ADR-0004 只读预检 verify_contract）**：新增 `verify_contract` MCP 工具与 `ferrycat-cli verify` 命令，纯只读核验指针一致性。
+- [x] **FC-B07（ADR-0004 1 次 TOCTOU 软失败缓冲）**：Strike 1 返回 `RETRY_NEEDED` 与脏文件清单及恢复指引；Strike 2 置为 `POINTER_STALE` 并在 `salvaged_result_json` 抢救提交产物。
 
 ---
 

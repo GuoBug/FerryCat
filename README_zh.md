@@ -8,7 +8,7 @@
 [![Node.js Version](https://img.shields.io/badge/Node.js-22.5%2B-339933?style=flat&logo=nodedotjs)](https://nodejs.org/)
 [![Native Addons](https://img.shields.io/badge/Native_Addons-0_(node%3Asqlite)-success?style=flat)]()
 [![Protocol](https://img.shields.io/badge/Protocol-MCP_Stdio-orange?style=flat)](https://modelcontextprotocol.io/)
-[![Glama](https://glama.ai/mcp/servers/GuoBug/FerryCat/badge)](https://glama.ai/mcp/servers/GuoBug/FerryCat)
+[![Glama](https://img.shields.io/badge/Glama-MCP_Server-18181b?style=flat)](https://glama.ai/mcp/servers/GuoBug/FerryCat)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 > **FerryCat** (`ferrycat`) 是一个基于 Model Context Protocol (MCP) 与 Node.js 内置 `node:sqlite`（WAL 并发模式）构建的轻量级、确定性跨宿主 AI Agent 工单交接与交叉评审总线。  
@@ -93,10 +93,13 @@ MCP 官方的 `Tasks` 规范（2025-11 / 2026-07）解决的是**单条 `Client 
 | `extend_ttl` | `CLAIMED → CLAIMED`（`claimed_at = now`） | 必须在当前执行窗口内调用；每位持单者最多续期 5 次；`now ≥ created_at + 4 × queue_ttl_sec` 后拒绝续期。 |
 | `fail_contract` | `CLAIMED → FAILED`（终态） | 必须提供 `reason`，落库为 `WORKER_FAILED: <reason>`；若窗口已过期才上报，则置为 `TIMED_OUT` 并保留失败原因。 |
 
-### 2. 全文件 SHA-256 指纹校验与 TOCTOU 窗口闭合
+### 2. 全文件 SHA-256 指纹校验、预检与 TOCTOU 软失败缓冲 (ADR-0004)
 - **派单快照**：`dispatch_contract` 读取磁盘文件，记录字节数 `size`、全文件 `sha256`（64 位 hex）以及非空首末行 `first_line` / `last_line`。若文件在最近 3 秒内刚被修改，返回 `warning` 提醒确认 IDE 缓冲区已落盘。
 - **领单核验**：`poll_next_task` 严格按 `存在性 -> 字节数 size -> 全文件 sha256` 顺序核验（绝不以 `mtime` 单独判死刑，避免 IDE 无变更保存导致误杀）。若不一致，等待 `150ms` 重试一次排除瞬态写入，仍不一致则直接置为终态 `POINTER_STALE`。
-- **交单 TOCTOU 复核**：`fulfill_contract` 在交单落库前二次执行 `verifySingleRun`，防止领单后至交单前目标文件被篡改。
+- **只读预检 (`verify_contract`)**：纯只读命令，允许 Worker 或外部脚本在交单前核验指针健康度（返回 `valid: true/false` 与脏文件清单），不消耗工单状态。
+- **TOCTOU 软失败缓冲**：`fulfill_contract` 在交单时二次核验全文件指纹。若检测到脏指针：
+  - **第 1 次超标（Strike 1）**：返回 `RETRY_NEEDED`，工单保持 `CLAIMED` 并自动续期执行窗口，返回脏文件清单与抢救指引（`git stash` / `git checkout -- <file>`）。
+  - **第 2 次超标（Strike 2）**：流转至终态 `POINTER_STALE`，但将已提交的审查结果完整保存在 `salvaged_result_json`，确保长文本 Token 产出绝不因指针陈旧而白费。
 
 ### 3. 单方向交付与有界 Schema 重试 (`RETRY_NEEDED` $\le 2$)
 - 使用带缓存的 Ajv 校验器验证 `structured_output`，并将校验错误压平为单行路径列表（如 `["/passed: must be boolean"]`）。
@@ -170,17 +173,18 @@ npm test
   }
 }
 ```
-> **注**：MCP `stdio` 模式与 CLI 直接调用模式（`node --experimental-sqlite dist/cli.js <dispatch|poll|fulfill|release|extend|fail|inspect|worker>`）共享同一份 `~/.ferrycat/mesh.db` 数据库与同一套 Zod 参数校验契约。`worker --exec` 模式下子进程非零退出时，工单会被直接置为 `FAILED`，不再挂在 `CLAIMED` 等超时。
+> **注**：MCP `stdio` 模式与 CLI 直接调用模式（`ferrycat-cli <dispatch|poll|verify|fulfill|release|extend|fail|inspect|worker>`）共享同一份 `~/.ferrycat/mesh.db` 数据库与同一套 Zod 参数校验契约。CLI 提供全量 `--help` 树、stdin 管道输入（`--file -` 或 `-`）、`verify` 只读预检、`inspect` ASCII 表格输出（支持 `--target <agent>` 过滤）、`worker --mode=watch|claim|exec` 以及 `--exec-file <script>` 无转义直接执行脚本。在 `worker --exec` 模式下子进程非零退出时，工单会被直接置为 `FAILED`，不再挂在 `CLAIMED` 等超时。
 
 ---
 
-## 暴露的 7 个 MCP 工具契约
+## 暴露的 8 个 MCP 工具契约
 
 | 工具名 | 调用角色 | 职责与事务行为 |
 | :--- | :--- | :--- |
 | **`dispatch_contract`** | 发起方 (Requester) | 校验路径黑名单 $\to$ 计算全文件 SHA-256 与首末行快照 $\to$ 写入 `SUBMITTED`。 |
 | **`poll_next_task`** | 接收方 (Worker) | 先读后写清理超时工单 $\to$ `changes === 1` 原子抢占为 `CLAIMED` $\to$ 校验文件指纹（不匹配则置为 `POINTER_STALE`）。 |
-| **`fulfill_contract`** | 接收方 (Worker) | 二次复核文件指纹（防 TOCTOU）$\to$ 校验 Ajv JSON Schema（失败 $\le 2$ 次返回 `RETRY_NEEDED`，第 3 次置为 `VALIDATION_FAILED`）$\to$ 通过则置为 `COMPLETED`。 |
+| **`verify_contract`** | 接收方 / 任意方 (Read-Only) | 只读预检：校验磁盘文件指纹与基线是否一致，不变更任何状态（ADR-0004）。 |
+| **`fulfill_contract`** | 接收方 (Worker) | 二次复核文件指纹（TOCTOU 软失败缓冲：Strike 1 返回 `RETRY_NEEDED`，Strike 2 置为 `POINTER_STALE` 并在 `salvaged_result` 抢救产出）$\to$ 校验 Ajv JSON Schema $\to$ 通过则置为 `COMPLETED`。 |
 | **`release_contract`** | 持单方 (Worker) | 将 `CLAIMED` 工单退回队尾重新置为 `SUBMITTED`。保留 `retry_count`（工单级熔断配额），清零 `extend_count`。最多退回 3 次；超出绝对生命期上限时拒绝。 |
 | **`extend_ttl`** | 持单方 (Worker) | 心跳续期：重置执行窗口（`claimed_at = now`），最多 5 次，总生命周期有上限。 |
 | **`fail_contract`** | 持单方 (Worker) | 携带必填 `reason` 将 `CLAIMED` 工单置为终态 `FAILED`。 |

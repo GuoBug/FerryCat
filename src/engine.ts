@@ -5,8 +5,8 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
   computeFingerprints,
+  verifyAllPointers,
   verifyFingerprintsWithRetry,
-  verifySingleRun,
 } from './fingerprint.js';
 import { validateContractOutput } from './schema-validator.js';
 import type {
@@ -26,6 +26,8 @@ import type {
   ReleaseContractInput,
   ReleaseContractResult,
   TaskType,
+  VerifyContractInput,
+  VerifyContractResult,
 } from './types.js';
 
 /** Default queue window (SUBMITTED) in seconds. */
@@ -48,6 +50,20 @@ export const MAX_TTL_EXTENSIONS = 5;
 
 /** Max times a contract may be released back to the queue before the holder must fail it. */
 export const MAX_RELEASES = 3;
+
+/**
+ * Number of TOCTOU-blocked fulfill attempts TOLERATED before transitioning to
+ * terminal POINTER_STALE (ADR-0004). Exact counting semantics:
+ *
+ *   attempt N where N <= MAX_TOCTOU_STRIKES  -> RETRY_NEEDED (contract stays CLAIMED,
+ *                                               window renewed so files can be restored)
+ *   attempt N where N >  MAX_TOCTOU_STRIKES  -> POINTER_STALE (terminal, payload salvaged)
+ *
+ * With MAX_TOCTOU_STRIKES = 1 the holder gets exactly ONE recoverable rejection:
+ * the 1st blocked fulfill is recoverable, the 2nd is terminal. Do not describe this
+ * as "Strike 1 and Strike 2" as though two independent chances existed.
+ */
+export const MAX_TOCTOU_STRIKES = 1;
 
 /**
  * extend_ttl is refused once now >= created_at + LIFETIME_QUEUE_TTL_MULTIPLIER * queue_ttl_sec,
@@ -149,7 +165,9 @@ export class FerryCatEngine {
         claimed_at INTEGER,
         completed_at INTEGER,
         extend_count INTEGER NOT NULL DEFAULT 0,
-        release_count INTEGER NOT NULL DEFAULT 0
+        release_count INTEGER NOT NULL DEFAULT 0,
+        toctou_strike INTEGER NOT NULL DEFAULT 0,
+        salvaged_result_json TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_contracts_poll
@@ -163,6 +181,8 @@ export class FerryCatEngine {
       ['queued_at', 'INTEGER'],
       ['extend_count', 'INTEGER NOT NULL DEFAULT 0'],
       ['release_count', 'INTEGER NOT NULL DEFAULT 0'],
+      ['toctou_strike', 'INTEGER NOT NULL DEFAULT 0'],
+      ['salvaged_result_json', 'TEXT'],
     ];
     const existingColumns = new Set(
       (this.db.prepare('PRAGMA table_info(contracts)').all() as Array<{ name: string }>).map(
@@ -437,16 +457,56 @@ export class FerryCatEngine {
       };
     }
 
-    // Re-verify file fingerprints at fulfill time to close the claim->read->fulfill TOCTOU window
+    //Re-verify file fingerprints at fulfill time to close the claim->read->fulfill TOCTOU window (ADR-0004)
     const fingerprints = JSON.parse(row.pointers_json) as FileFingerprint[];
-    const toctouCheck = verifySingleRun(row.workspace_root, fingerprints);
-    if (!toctouCheck.valid) {
-      const toctouReason = `TOCTOU_${toctouCheck.reason}: ${toctouCheck.detail}`;
+    const toctouCheck = verifyAllPointers(row.workspace_root, fingerprints);
+    if (!toctouCheck.valid && toctouCheck.firstFailure) {
+      const toctouReason = `TOCTOU_${toctouCheck.firstFailure.reason}: ${toctouCheck.firstFailure.detail}`;
+      const nextStrike = (row.toctou_strike ?? 0) + 1;
+
+      if (nextStrike <= MAX_TOCTOU_STRIKES) {
+        // ADR-0004 Soft-Failure Buffering: keep CLAIMED and renew window once so holder can restore files
+        this.db
+          .prepare(
+            `UPDATE contracts
+             SET toctou_strike = ?, claimed_at = ?
+             WHERE id = ? AND status = 'CLAIMED'`
+          )
+          .run(nextStrike, nowMs, row.id);
+
+        return {
+          ok: false,
+          contract_id: row.id,
+          status: 'RETRY_NEEDED',
+          retry_count: row.retry_count,
+          max_retries: row.max_retries,
+          toctou_strike: nextStrike,
+          max_toctou_strikes: MAX_TOCTOU_STRIKES,
+          dirty_files: toctouCheck.dirtyFiles,
+          message: `Contract "${row.id}" blocked by TOCTOU guard (strike ${nextStrike}/${MAX_TOCTOU_STRIKES}; contract stays CLAIMED with renewed ${row.exec_ttl_sec}s window): ${toctouReason}. RESCUE: (1) If you edited pointer files during review, restore/stash them (e.g., "git stash" or "git checkout -- <file>"), verify via "ferrycat-cli verify --id ${row.id}", and re-run fulfill_contract with your proposed diffs inside structured_output.fixes; (2) If the baseline itself changed on disk, call release_contract or ask "${row.requester_agent}" to re-dispatch.`,
+        };
+      }
+
+      // Exceeded MAX_TOCTOU_STRIKES: transition to terminal POINTER_STALE, preserving submitted output in salvaged_result_json
+      const salvagedJson = JSON.stringify({
+        result_summary: input.result_summary,
+        structured_output: input.structured_output ?? null,
+        artifacts_pointers: input.artifacts_pointers ?? null,
+        salvaged_at: nowMs,
+        dirty_files: toctouCheck.dirtyFiles,
+      });
+
       this.db
         .prepare(
-          `UPDATE contracts SET status = 'POINTER_STALE', error_reason = ?, completed_at = ? WHERE id = ? AND status = 'CLAIMED'`
+          `UPDATE contracts
+           SET status = 'POINTER_STALE',
+               toctou_strike = ?,
+               error_reason = ?,
+               salvaged_result_json = ?,
+               completed_at = ?
+           WHERE id = ? AND status = 'CLAIMED'`
         )
-        .run(toctouReason, nowMs, row.id);
+        .run(nextStrike, toctouReason, salvagedJson, nowMs, row.id);
 
       return {
         ok: false,
@@ -454,7 +514,10 @@ export class FerryCatEngine {
         status: 'POINTER_STALE',
         retry_count: row.retry_count,
         max_retries: row.max_retries,
-        message: `Contract "${row.id}" rejected at fulfill time as POINTER_STALE because target file changed during execution (${toctouReason}).`,
+        toctou_strike: nextStrike,
+        max_toctou_strikes: MAX_TOCTOU_STRIKES,
+        dirty_files: toctouCheck.dirtyFiles,
+        message: `Contract "${row.id}" rejected at fulfill time as terminal POINTER_STALE after exceeding max_toctou_strikes (${MAX_TOCTOU_STRIKES}) (${toctouReason}). Your submitted payload was preserved in salvaged_result so work is not lost. Please ask "${row.requester_agent}" to re-dispatch with fresh file fingerprints.`,
       };
     }
 
@@ -664,7 +727,10 @@ export class FerryCatEngine {
     }
 
     const reason = input.reason?.trim();
-    const errorReason = reason ? `RELEASED_BY_HOLDER: ${reason}` : 'RELEASED_BY_HOLDER';
+    const releaseEntry = reason ? `RELEASED_BY_HOLDER: ${reason}` : 'RELEASED_BY_HOLDER';
+    const errorReason = row.error_reason
+      ? `${releaseEntry} | prev: ${row.error_reason}`.slice(0, 2000)
+      : releaseEntry;
 
     const res = this.db
       .prepare(
@@ -673,6 +739,7 @@ export class FerryCatEngine {
              claimed_at = NULL,
              queued_at = ?,
              extend_count = 0,
+             toctou_strike = 0,
              release_count = release_count + 1,
              error_reason = ?
          WHERE id = ? AND status = 'CLAIMED' AND target_agent = ? AND release_count = ?`
@@ -833,6 +900,61 @@ export class FerryCatEngine {
   }
 
   /**
+   * Read-only pre-flight verification (ADR-0004): checks whether on-disk pointer files
+   * still match the contract's dispatched SHA-256 baseline without mutating any state.
+   */
+  public verifyContract(input: VerifyContractInput): VerifyContractResult {
+    const row = this.db
+      .prepare(`SELECT * FROM contracts WHERE id = ?`)
+      .get(input.contract_id) as unknown as ContractRow | undefined;
+
+    if (!row) {
+      throw new Error(`Contract "${input.contract_id}" not found.`);
+    }
+
+    const fingerprints = JSON.parse(row.pointers_json) as FileFingerprint[];
+    const check = verifyAllPointers(row.workspace_root, fingerprints);
+    const toctouStrike = row.toctou_strike ?? 0;
+    const callerAgent = input.agent_id?.trim();
+    const holderNote =
+      callerAgent && callerAgent !== row.target_agent
+        ? ` (Note: contract is assigned to "${row.target_agent}", verified by "${callerAgent}".)`
+        : '';
+
+    if (check.valid) {
+      const fulfillable = row.status === 'CLAIMED';
+      return {
+        ok: true,
+        valid: true,
+        contract_id: row.id,
+        status: row.status,
+        fulfillable,
+        target_agent: row.target_agent,
+        toctou_strike: toctouStrike,
+        max_toctou_strikes: MAX_TOCTOU_STRIKES,
+        dirty_files: [],
+        message: fulfillable
+          ? `All ${fingerprints.length} pointer file(s) for contract "${row.id}" match the dispatched SHA-256 baseline. Safe to fulfill.${holderNote}`
+          : `All ${fingerprints.length} pointer file(s) for contract "${row.id}" match the baseline, but contract status is '${row.status}' and it can no longer be fulfilled. Ask the requester to re-dispatch with fresh fingerprints.${holderNote}`,
+      };
+    }
+
+    const dirtyPaths = check.dirtyFiles.map((d) => d.path).join(', ');
+    return {
+      ok: true,
+      valid: false,
+      contract_id: row.id,
+      status: row.status,
+      fulfillable: false,
+      target_agent: row.target_agent,
+      toctou_strike: toctouStrike,
+      max_toctou_strikes: MAX_TOCTOU_STRIKES,
+      dirty_files: check.dirtyFiles,
+      message: `Pointer drift detected in ${check.dirtyFiles.length} file(s) [${dirtyPaths}] for contract "${row.id}". Restore/stash the modified file(s) before calling fulfill_contract, and deliver any proposed edits inside structured_output.fixes.${holderNote}`,
+    };
+  }
+
+  /**
    * Strictly read-only inspection: never mutates the SQLite database.
    * Computes `is_logically_expired` dynamically on read.
    */
@@ -845,26 +967,37 @@ export class FerryCatEngine {
   } {
     let rows: ContractRow[];
     const limit = Math.min(Math.max(input.limit ?? 10, 1), 100);
+    const targetFilter = input.target_agent?.trim();
 
     if (input.contract_id) {
       const single = this.db
         .prepare(`SELECT * FROM contracts WHERE id = ?`)
         .get(input.contract_id) as unknown as ContractRow | undefined;
-      rows = single ? [single] : [];
-    } else if (!input.status || input.status === 'ALL') {
-      rows = this.db
-        .prepare(`SELECT * FROM contracts ORDER BY created_at DESC LIMIT ?`)
-        .all(limit) as unknown as ContractRow[];
-    } else if (input.status === 'ACTIVE') {
-      rows = this.db
-        .prepare(
-          `SELECT * FROM contracts WHERE status IN ('SUBMITTED', 'CLAIMED') ORDER BY created_at DESC LIMIT ?`
-        )
-        .all(limit) as unknown as ContractRow[];
+      rows = single && (!targetFilter || single.target_agent === targetFilter) ? [single] : [];
     } else {
+      const conditions: string[] = [];
+      const params: Array<string | number> = [];
+
+      if (input.status && input.status !== 'ALL') {
+        if (input.status === 'ACTIVE') {
+          conditions.push(`status IN ('SUBMITTED', 'CLAIMED')`);
+        } else {
+          conditions.push(`status = ?`);
+          params.push(input.status);
+        }
+      }
+
+      if (targetFilter) {
+        conditions.push(`target_agent = ?`);
+        params.push(targetFilter);
+      }
+
+      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      params.push(limit);
+
       rows = this.db
-        .prepare(`SELECT * FROM contracts WHERE status = ? ORDER BY created_at DESC LIMIT ?`)
-        .all(input.status, limit) as unknown as ContractRow[];
+        .prepare(`SELECT * FROM contracts ${whereClause} ORDER BY created_at DESC LIMIT ?`)
+        .all(...params) as unknown as ContractRow[];
     }
 
     const formatted = rows.map((r) => {
@@ -889,6 +1022,7 @@ export class FerryCatEngine {
         max_retries: r.max_retries,
         extend_count: r.extend_count ?? 0,
         release_count: r.release_count ?? 0,
+        toctou_strike: r.toctou_strike ?? 0,
         pointers: JSON.parse(r.pointers_json),
         contract_schema: r.contract_schema_json ? JSON.parse(r.contract_schema_json) : null,
         result_summary: r.result_summary,
@@ -897,6 +1031,7 @@ export class FerryCatEngine {
           ? JSON.parse(r.artifacts_pointers_json)
           : null,
         verified_sha256: r.verified_sha256_json ? JSON.parse(r.verified_sha256_json) : null,
+        salvaged_result: r.salvaged_result_json ? JSON.parse(r.salvaged_result_json) : null,
         error_reason: r.error_reason,
         created_at: r.created_at,
         queued_at: queueStart,

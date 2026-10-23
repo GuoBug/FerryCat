@@ -89,3 +89,18 @@ flowchart TD
 
 ### 限制与代价 (Trade-offs)
 - 审查者不能随手在本地 IDE 中热修并直接提交 commit，必须先交单、再应用 patch（或由发起方合并），稍微增加了一步应用 diff 的步骤，但换取了跨 Agent 协作的最高安全级别。
+
+---
+
+## 4. 附录：核心生命周期状态迁移与契约不变量说明 (Lifecycle Invariants Note)
+
+在 Phase A / B 联合审计与验证中，针对以下两处核心状态契约设计原则确立了明确共识：
+
+1. **`release_contract` 为何保留 `retry_count`（防止配额洗白）**：
+   - 当工单由持单方主动退回队列（`CLAIMED → SUBMITTED`）时，`extend_count` 会被清零（因为续期是针对当前认领者的执行期心跳预算），但**必须严格保留 `retry_count`**。
+   - 核心原因：Schema 校验失败熔断（`max_retries = 2`）属于**工单级别（Contract-Level）的系统级防御配额**。如果释放退回可以重置 `retry_count`，恶意或死循环 Worker 就可以通过“格式错误 $\to$ 退单 $\to$ 重抢 $\to$ 格式错误”无休止洗白配额，从而破坏系统的确定性与熔断保护。
+2. **`extend_ttl` 采用严格大于号校验（`proposedExpiresAt > lifetimeDeadline`）**：
+   - 续期判断必须使用严格大于号而非大于等于号。若续期提议的到期时刻恰好等于绝对生命周期截止点（`proposedExpiresAt === lifetimeDeadline`），该次续期应当被合法接纳；只有当续期提议企图突破绝对生命周期上限（`>`）时才予以拒绝，从而严格捍卫绝对生命期上限的同时不错杀临界续期。
+3. **`release_contract` 为何必须清零 `toctou_strike`（持有者级配额隔离）**：
+   - `toctou_strike` 与 `extend_count` 同属于**持有者级别（Holder-Level）的状态量**，而非契约级别熔断配额。它衡量的是“当前持有者在本次审议执行期间是否处于被阻止状态”。
+   - 若持单方 A 在审议期间因误碰文件产生 Strike 1 并主动退单释放，后续认领该工单的持单方 B 不应背负 A 的历史违规记录。将 `toctou_strike` 清零确保了退单释放作为“抢救手段”的真实有效性，避免无辜的下一位 Worker 因继承前任 Strike 而在任何轻微文件变动下被直接终态判死。

@@ -14,10 +14,14 @@ const targetPath = fileURLToPath(new URL('../dist/index.js', import.meta.url));
 const needsFlag = major === 22 && !process.execArgv.includes('--experimental-sqlite');
 
 if (needsFlag) {
+  const childEnv = { ...process.env };
+  if (!childEnv.FERRYCAT_SHOW_NODE_WARNINGS) {
+    childEnv.NODE_NO_WARNINGS = '1';
+  }
   const child = spawn(
     process.execPath,
     ['--experimental-sqlite', ...process.execArgv, targetPath, ...process.argv.slice(2)],
-    { stdio: 'inherit', env: process.env }
+    { stdio: 'inherit', env: childEnv }
   );
 
   child.on('exit', (code, signal) => {

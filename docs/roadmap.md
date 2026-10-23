@@ -16,13 +16,25 @@
 
 ---
 
-## Phase A: Lifecycle & Execution Model Correction (Completed, unreleased)
+## Phase A: Lifecycle & Execution Model Correction (v0.2.0 — Completed)
 
 - [x] **FC-A01 (Tiered default exec TTL)**: `code_review` / `architecture_audit` default to 1800s, `implementation` / `test_generation` to 300s; explicit `exec_ttl_sec` overrides.
-- [x] **FC-A02 (`release_contract`)**: Holder-only `CLAIMED → SUBMITTED` re-queue at the tail with a fresh queue window; resets `retry_count` / `extend_count`; capped at 3 releases.
+- [x] **FC-A02 (`release_contract`)**: Holder-only `CLAIMED → SUBMITTED` re-queue at the tail with a fresh queue window; resets `extend_count`; preserves `retry_count`; capped at 3 releases.
 - [x] **FC-A03 (`extend_ttl`)**: Holder-only heartbeat resetting `claimed_at`; max 5 renewals per holder, refused after `created_at + 4 × queue_ttl_sec`. `RETRY_NEEDED` also renews the execution window.
 - [x] **FC-A04 (`fail_contract` + `FAILED` terminal state)**: Holder-only explicit failure with mandatory reason; `worker --exec` non-zero exit now closes the contract as `FAILED`.
 - [x] **FC-A05 (In-place schema migration)**: Additive `queued_at` / `extend_count` / `release_count` columns; rows written by older hosts (`queued_at IS NULL`) remain claimable.
+
+---
+
+## Phase B: CLI Ergonomics, DX & TOCTOU Soft-Failure Buffering (v0.3.0 — Completed)
+
+- [x] **FC-B01 (Global & Subcommand `--help` / `--version`)**: Hierarchical CLI help system with clear usage, option descriptions, and examples across all 9 subcommands.
+- [x] **FC-B02 (Stdin Pipe & BOM Stripping)**: Piped stdin payload support (`--file -`, positional `-`, and auto-detected piped stdin) with transparent UTF-8 BOM removal.
+- [x] **FC-B03 (Inspect ASCII Table & Target Filtering)**: Human-friendly ASCII terminal table view by default with `--target <agent>` SQL filtering, alongside `--json` / `--format=json`.
+- [x] **FC-B04 (Worker Modes & Direct Script Execution)**: Explicit `--mode=watch|claim|exec` options and `--exec-file <script>` executing `.js/.mjs/.cjs/.ts/.ps1/.sh` directly without shell quote escaping.
+- [x] **FC-B05 (Human-Friendly Zod Error Formatting)**: Clean, actionable error reporting without raw SQLite stack leakage.
+- [x] **FC-B06 (ADR-0004 Read-Only Pre-Flight Verification)**: `verify_contract` MCP tool and `ferrycat-cli verify` command auditing on-disk pointers without mutating state.
+- [x] **FC-B07 (ADR-0004 1-Strike TOCTOU Soft-Failure Buffering)**: Strike 1 returns `RETRY_NEEDED` with dirty files and recovery instructions; Strike 2 transitions to `POINTER_STALE` while preserving review results in `salvaged_result_json`.
 
 ---
 

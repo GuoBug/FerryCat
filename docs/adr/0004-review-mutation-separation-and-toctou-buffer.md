@@ -86,3 +86,18 @@ flowchart TD
 
 ### Trade-offs
 - Reviewers cannot directly edit and commit files in-place during review contracts. They must provide diffs in structured output for the requester to apply.
+
+---
+
+## 4. Appendix: Lifecycle Invariants & Architectural Rationale
+
+During cross-model verification of Phase A & Phase B, two core lifecycle contract invariants were explicitly established:
+
+1. **Why `release_contract` strictly preserves `retry_count` (Preventing Quota Laundering)**:
+   - When a contract is released back to the queue (`CLAIMED → SUBMITTED`), `extend_count` is reset to 0 because renewals are holder-specific execution heartbeats. However, **`retry_count` is strictly preserved**.
+   - **Rationale**: Schema validation circuit breaking (`max_retries = 2`) is a **contract-level system defense quota**. If releasing a contract reset `retry_count`, a malfunctioning or looping agent could launder its quota indefinitely via "bad payload $\to$ release $\to$ re-claim $\to$ bad payload", circumventing circuit-breaking guarantees.
+2. **Why `extend_ttl` uses strict inequality (`proposedExpiresAt > lifetimeDeadline`)**:
+   - A proposed renewal that lands exactly on the lifetime deadline (`proposedExpiresAt === lifetimeDeadline`) is valid and admitted. Only proposals that would overshoot the ceiling (`>`) are rejected, protecting the absolute contract lifetime boundary while never prematurely failing boundary-aligned renewals.
+3. **Why `release_contract` resets `toctou_strike` to 0 (Holder-Level Quota Isolation)**:
+   - `toctou_strike` measures whether the current holder encountered an active pointer drift during their review session. It is a **holder-level state variable** (like `extend_count`), not a contract-level breaker quota (like `retry_count`).
+   - If Worker A releases a contract after encountering Strike 1, Worker B should not inherit A's strike. Resetting `toctou_strike` to 0 upon release guarantees that `release_contract` serves as a legitimate rescue path without penalizing the next worker.

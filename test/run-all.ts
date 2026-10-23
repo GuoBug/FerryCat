@@ -379,19 +379,36 @@ async function test5_DualStageTtlAndHappyPath(): Promise<void> {
     const cToctou = engine.pollNextTask({ agent_id: 'workbuddy' }, tFulfill + 1000);
     assert.equal(cToctou.has_task, true);
 
-    // Mutate file while claimed
+    // Mutate file while claimed: Strike 1 triggers ADR-0004 soft-failure (RETRY_NEEDED), Strike 2 triggers terminal POINTER_STALE
     fs.writeFileSync(filePath, '// Mutated mid-review!\nexport const v = 2;\n', 'utf8');
-    const fToctou = engine.fulfillContract(
+    const fToctouStrike1 = engine.fulfillContract(
       {
         contract_id: dToctou.contract_id,
         agent_id: 'workbuddy',
-        result_summary: 'Should be rejected due to TOCTOU mutation',
+        result_summary: 'First attempt while file is dirty',
       },
       tFulfill + 2000
     );
-    assert.equal(fToctou.ok, false);
-    assert.equal(fToctou.status, 'POINTER_STALE');
-    console.log('  PASS: Fulfill-time TOCTOU fingerprint guard caught mid-execution file change as POINTER_STALE.');
+    assert.equal(fToctouStrike1.ok, false);
+    assert.equal(fToctouStrike1.status, 'RETRY_NEEDED');
+    assert.equal(fToctouStrike1.toctou_strike, 1);
+    assert.deepEqual(
+      fToctouStrike1.dirty_files?.map((d) => d.path),
+      ['engine.ts']
+    );
+
+    const fToctouStrike2 = engine.fulfillContract(
+      {
+        contract_id: dToctou.contract_id,
+        agent_id: 'workbuddy',
+        result_summary: 'Second attempt without restoring file',
+      },
+      tFulfill + 3000
+    );
+    assert.equal(fToctouStrike2.ok, false);
+    assert.equal(fToctouStrike2.status, 'POINTER_STALE');
+    assert.equal(fToctouStrike2.toctou_strike, 2);
+    console.log('  PASS: Fulfill-time TOCTOU fingerprint guard caught mid-execution file change (Strike 1 RETRY_NEEDED -> Strike 2 POINTER_STALE).');
   } finally {
     engine.close();
     cleanup();
@@ -399,7 +416,7 @@ async function test5_DualStageTtlAndHappyPath(): Promise<void> {
 }
 
 async function test6_McpStdioHandshakeAndToolDiscovery(): Promise<void> {
-  console.log('\n[Test 6] MCP Stdio Server Handshake & 7-Tool Registration Check');
+  console.log('\n[Test 6] MCP Stdio Server Handshake & 8-Tool Registration Check');
   const distIndex = path.resolve(__dirname, '../dist/index.js');
   const { dbPath, cleanup } = createTempWorkspace('mcp-stdio');
 
@@ -468,6 +485,7 @@ async function test6_McpStdioHandshakeAndToolDiscovery(): Promise<void> {
       'inspect_mesh_state',
       'poll_next_task',
       'release_contract',
+      'verify_contract',
     ]);
     console.log(`  PASS: MCP Server stdio handshake succeeded; registered tools: ${toolNames.join(', ')}`);
   } finally {
@@ -1090,6 +1108,353 @@ async function test10_LegacySchemaMigrationAndCliLifecycle(): Promise<void> {
   }
 }
 
+async function test11_PhaseBCliErgonomicsAndToctouBuffer(): Promise<void> {
+  console.log('\n[Test 11] Phase B (v0.3.0): ADR-0004 TOCTOU Soft-Failure Buffer, Pre-Flight Verify & CLI Ergonomics');
+  const { dir, dbPath, cleanup } = createTempWorkspace('phase-b');
+
+  try {
+    const fileA = path.join(dir, 'file-a.ts');
+    const fileB = path.join(dir, 'file-b.ts');
+    const origA = 'export const a = 1;\n';
+    const origB = 'export const b = 2;\n';
+    fs.writeFileSync(fileA, origA, 'utf8');
+    fs.writeFileSync(fileB, origB, 'utf8');
+
+    const engine = new FerryCatEngine({ dbPath, defaultAgentName: 'antigravity', fingerprintRetryDelayMs: 5 });
+
+    // 11A: ADR-0004 Pre-flight verify_contract & 1-strike TOCTOU recovery (mutate -> Strike 1 RETRY_NEEDED -> restore -> COMPLETED)
+    const cRecover = engine.dispatchContract({
+      target_agent: 'workbuddy',
+      task_type: 'code_review',
+      title: 'ADR-0004 Strike 1 Recovery Test',
+      context_summary: 'Reviewer edits file by mistake, hits Strike 1, restores file, and fulfills cleanly',
+      workspace_root: dir,
+      pointers: [{ path: 'file-a.ts' }, { path: 'file-b.ts' }],
+    });
+
+    const pRecover = engine.pollNextTask({ agent_id: 'workbuddy' }, 1000);
+    assert.strictEqual(pRecover.has_task, true);
+
+    // Pre-flight check when clean
+    const vClean = engine.verifyContract({ contract_id: cRecover.contract_id, agent_id: 'workbuddy' });
+    assert.strictEqual(vClean.ok, true);
+    assert.strictEqual(vClean.valid, true);
+    assert.strictEqual(vClean.fulfillable, true);
+    assert.strictEqual(vClean.status, 'CLAIMED');
+    assert.deepStrictEqual(vClean.dirty_files, []);
+
+    // Reviewer accidentally edits both files during review
+    fs.writeFileSync(fileA, 'export const a = 999; // reviewer edit\n', 'utf8');
+    fs.writeFileSync(fileB, 'export const b = 888; // reviewer edit\n', 'utf8');
+
+    // Pre-flight verify catches both dirty files without consuming a strike
+    const vDirty = engine.verifyContract({ contract_id: cRecover.contract_id, agent_id: 'workbuddy' });
+    assert.strictEqual(vDirty.ok, true);
+    assert.strictEqual(vDirty.valid, false);
+    assert.strictEqual(vDirty.fulfillable, false);
+    assert.strictEqual(vDirty.status, 'CLAIMED');
+    assert.deepStrictEqual(
+      vDirty.dirty_files.map((d) => d.path).sort(),
+      ['file-a.ts', 'file-b.ts']
+    );
+    assert.strictEqual(vDirty.toctou_strike, 0);
+
+    // Strike 1: Reviewer calls fulfill while files are still dirty -> soft failure RETRY_NEEDED (stays CLAIMED)
+    const fStrike1 = engine.fulfillContract(
+      {
+        contract_id: cRecover.contract_id,
+        agent_id: 'workbuddy',
+        result_summary: 'Detailed review report (10k tokens)',
+      },
+      2000
+    );
+    assert.strictEqual(fStrike1.ok, false);
+    assert.strictEqual(fStrike1.status, 'RETRY_NEEDED');
+    assert.strictEqual(fStrike1.toctou_strike, 1);
+    assert.strictEqual(fStrike1.max_toctou_strikes, 1);
+    assert.deepStrictEqual(
+      fStrike1.dirty_files?.map((d) => d.path).sort(),
+      ['file-a.ts', 'file-b.ts']
+    );
+
+    // Contract is still CLAIMED with renewed claimed_at = 2000
+    const afterStrike1 = engine.inspectMeshState({ contract_id: cRecover.contract_id }, 2000).contracts[0];
+    assert.strictEqual(afterStrike1.status, 'CLAIMED');
+    assert.strictEqual(afterStrike1.toctou_strike, 1);
+    assert.strictEqual(afterStrike1.claimed_at, 2000);
+
+    // Reviewer restores files and retries fulfill -> succeeds COMPLETED!
+    fs.writeFileSync(fileA, origA, 'utf8');
+    fs.writeFileSync(fileB, origB, 'utf8');
+    const fRecovered = engine.fulfillContract(
+      {
+        contract_id: cRecover.contract_id,
+        agent_id: 'workbuddy',
+        result_summary: 'Detailed review report (10k tokens)',
+      },
+      2500
+    );
+    assert.strictEqual(fRecovered.ok, true);
+    assert.strictEqual(fRecovered.status, 'COMPLETED');
+
+    // Pre-flight check on COMPLETED contract reports fulfillable=false (P1-3)
+    const vCompleted = engine.verifyContract({ contract_id: cRecover.contract_id, agent_id: 'workbuddy' });
+    assert.strictEqual(vCompleted.valid, true);
+    assert.strictEqual(vCompleted.fulfillable, false);
+    assert.ok(vCompleted.message.includes("contract status is 'COMPLETED' and it can no longer be fulfilled"));
+    console.log('  PASS [11A - ADR-0004 Recovery]: verifyContract detected dirty pointers; Strike 1 returned RETRY_NEEDED; restored files completed cleanly.');
+
+    // 11B: Strike 2 terminal POINTER_STALE preserves salvaged_result_json + P2-3 release appends error_reason history
+    const cSalvage = engine.dispatchContract({
+      target_agent: 'workbuddy',
+      task_type: 'code_review',
+      title: 'ADR-0004 Strike 2 Salvage Test',
+      context_summary: 'Verify salvaged_result is preserved on Strike 2 POINTER_STALE',
+      workspace_root: dir,
+      pointers: [{ path: 'file-a.ts' }],
+    });
+    engine.pollNextTask({ agent_id: 'workbuddy' });
+    engine.releaseContract({ contract_id: cSalvage.contract_id, agent_id: 'workbuddy', reason: 'first release' });
+    engine.pollNextTask({ agent_id: 'workbuddy' });
+    engine.releaseContract({ contract_id: cSalvage.contract_id, agent_id: 'workbuddy', reason: 'second release' });
+
+    const afterReleases = engine.inspectMeshState({ contract_id: cSalvage.contract_id }).contracts[0];
+    assert.strictEqual(afterReleases.toctou_strike, 0, 'releaseContract must reset toctou_strike to 0');
+    assert.ok(
+      String(afterReleases.error_reason).includes('RELEASED_BY_HOLDER: second release | prev: RELEASED_BY_HOLDER: first release'),
+      `Expected preserved release history, got: ${afterReleases.error_reason}`
+    );
+
+    engine.pollNextTask({ agent_id: 'workbuddy' });
+    fs.writeFileSync(fileA, 'export const a = 777; // dirty again\n', 'utf8');
+    const s1 = engine.fulfillContract({
+      contract_id: cSalvage.contract_id,
+      agent_id: 'workbuddy',
+      result_summary: 'Valuable audit report Strike 1',
+    });
+    assert.strictEqual(s1.status, 'RETRY_NEEDED');
+
+    const s2 = engine.fulfillContract({
+      contract_id: cSalvage.contract_id,
+      agent_id: 'workbuddy',
+      result_summary: 'Valuable audit report Strike 2 (must be salvaged)',
+      structured_output: { issues: ['P1-A', 'P2-B'] },
+    });
+    assert.strictEqual(s2.ok, false);
+    assert.strictEqual(s2.status, 'POINTER_STALE');
+    const salvagedRow = engine.inspectMeshState({ contract_id: cSalvage.contract_id }).contracts[0];
+    assert.strictEqual(salvagedRow.status, 'POINTER_STALE');
+    assert.ok(salvagedRow.salvaged_result, 'salvaged_result must be populated on Strike 2 POINTER_STALE');
+    assert.strictEqual((salvagedRow.salvaged_result as any).result_summary, 'Valuable audit report Strike 2 (must be salvaged)');
+    assert.deepStrictEqual((salvagedRow.salvaged_result as any).structured_output, { issues: ['P1-A', 'P2-B'] });
+    fs.writeFileSync(fileA, origA, 'utf8');
+    engine.close();
+    console.log('  PASS [11B - Salvage & Release History]: Strike 2 preserved salvaged_result; releaseContract appended error_reason history.');
+
+    // 11C: CLI --help, help <cmd>, --version, stdin pipe (--file - with BOM), positional JSON + flags (P2-1), inspect table & --target
+    const cliPath = path.resolve(__dirname, '../dist/cli.js');
+    const runCli = (
+      args: string[],
+      stdinData?: string
+    ): Promise<{ code: number; stdout: string; stderr: string }> =>
+      new Promise((resolve) => {
+        const child = spawn(process.execPath, ['--experimental-sqlite', cliPath, ...args], {
+          env: { ...process.env, FERRYCAT_DB_PATH: dbPath, NODE_NO_WARNINGS: '1' },
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        let stdout = '';
+        let stderr = '';
+        child.stdout.on('data', (d) => (stdout += String(d)));
+        child.stderr.on('data', (d) => (stderr += String(d)));
+        child.on('close', (code) => resolve({ code: code ?? 1, stdout, stderr }));
+        if (stdinData !== undefined) {
+          child.stdin.write(stdinData);
+        }
+        child.stdin.end();
+      });
+
+    const helpGlobal = await runCli(['--help']);
+    assert.strictEqual(helpGlobal.code, 0);
+    assert.ok(helpGlobal.stdout.includes('FerryCat CLI v0.3.0'));
+
+    const helpFulfill = await runCli(['help', 'fulfill']);
+    assert.strictEqual(helpFulfill.code, 0);
+    assert.ok(helpFulfill.stdout.includes('Usage: ferrycat-cli fulfill'));
+
+    const verRes = await runCli(['--version']);
+    assert.strictEqual(verRes.code, 0);
+    assert.strictEqual(verRes.stdout.trim(), '0.3.0');
+
+    // Stdin dispatch with UTF-8 BOM (\uFEFF) via --file -
+    const stdinDispatchPayload =
+      '\uFEFF' +
+      JSON.stringify({
+        requester_agent: 'cli-tester',
+        target_agent: 'stdin-worker',
+        task_type: 'code_review',
+        title: 'Dispatched via stdin with BOM',
+        context_summary: 'Testing --file - with UTF-8 BOM stripping',
+        workspace_root: dir,
+        pointers: [{ path: 'file-a.ts' }],
+      });
+    const resStdinDispatch = await runCli(['dispatch', '--file', '-'], stdinDispatchPayload);
+    assert.strictEqual(resStdinDispatch.code, 0, resStdinDispatch.stderr);
+    const stdinContractId = JSON.parse(resStdinDispatch.stdout).contract_id;
+
+    // CLI verify subcommand
+    const resVerifyCli = await runCli(['verify', '--id', stdinContractId, '--agent', 'stdin-worker']);
+    assert.strictEqual(resVerifyCli.code, 0, resVerifyCli.stderr);
+    assert.strictEqual(JSON.parse(resVerifyCli.stdout).valid, true);
+
+    // worker --mode=claim
+    const resClaimMode = await runCli(['worker', '--agent', 'stdin-worker', '--mode=claim']);
+    assert.strictEqual(resClaimMode.code, 0, resClaimMode.stderr);
+    assert.strictEqual(JSON.parse(resClaimMode.stdout).mode, 'CLAIM_ONLY');
+
+    // P2-1: Positional JSON + explicit --agent flag coexistence on fulfill
+    const resPositionalPlusFlag = await runCli([
+      'fulfill',
+      JSON.stringify({ contract_id: stdinContractId, result_summary: 'Fulfilled with positional JSON + --agent flag' }),
+      '--agent',
+      'stdin-worker',
+    ]);
+    assert.strictEqual(resPositionalPlusFlag.code, 0, resPositionalPlusFlag.stderr);
+    assert.strictEqual(JSON.parse(resPositionalPlusFlag.stdout).status, 'COMPLETED');
+
+    // P1-2: CLI dispatch --agent override_me '{ "requester_agent": "IGNORED", ... }' overrides requester_agent
+    const resDispatchOverride = await runCli([
+      'dispatch',
+      '--agent',
+      'cli-requester-override',
+      JSON.stringify({
+        requester_agent: 'IGNORED',
+        target_agent: 'override-target-worker',
+        task_type: 'code_review',
+        title: 'Dispatch --agent override test',
+        context_summary: 'Verify --agent flag overrides payload requester_agent',
+        workspace_root: dir,
+        pointers: [{ path: 'file-a.ts' }],
+      }),
+    ]);
+    assert.strictEqual(resDispatchOverride.code, 0, resDispatchOverride.stderr);
+    const overrideContractId = JSON.parse(resDispatchOverride.stdout).contract_id;
+    const verifyEng = new FerryCatEngine({ dbPath });
+    assert.strictEqual(
+      verifyEng.inspectMeshState({ contract_id: overrideContractId }).contracts[0].requester_agent,
+      'cli-requester-override'
+    );
+    verifyEng.close();
+
+    // inspect ASCII table (default) + --target filter + --json
+    const resInspectTable = await runCli(['inspect', '--target', 'stdin-worker']);
+    assert.strictEqual(resInspectTable.code, 0, resInspectTable.stderr);
+    assert.ok(resInspectTable.stdout.includes('CONTRACT_ID'), 'Default inspect output should be an ASCII table');
+    assert.ok(resInspectTable.stdout.includes('stdin-worker'));
+    assert.ok(!resInspectTable.stdout.includes('workbuddy'), '--target filter must exclude other agents');
+
+    const resInspectJson = await runCli(['inspect', '--target', 'stdin-worker', '--json']);
+    assert.strictEqual(resInspectJson.code, 0, resInspectJson.stderr);
+    const parsedInspectJson = JSON.parse(resInspectJson.stdout);
+    assert.strictEqual(parsedInspectJson.total_returned, 1);
+    assert.strictEqual(parsedInspectJson.contracts.length, 1);
+    assert.strictEqual(parsedInspectJson.contracts[0].contract_id, stdinContractId);
+    console.log('  PASS [11C - CLI Ergonomics]: --help, --version, --file - (UTF-8 BOM), positional JSON + flags, verify, and inspect ASCII table / --target passed.');
+
+    // 11D: worker --mode=exec --once --exec-file <script.js> & friendly Zod error formatting
+    const resDispatchExecFile = await runCli(
+      ['dispatch', '-'],
+      JSON.stringify({
+        requester_agent: 'cli-tester',
+        target_agent: 'execfile-worker',
+        task_type: 'implementation',
+        title: 'Exec-file test',
+        context_summary: 'Run external .js script via --exec-file',
+        workspace_root: dir,
+        pointers: [{ path: 'file-a.ts' }],
+      })
+    );
+    assert.strictEqual(resDispatchExecFile.code, 0, resDispatchExecFile.stderr);
+    const execFileContractId = JSON.parse(resDispatchExecFile.stdout).contract_id;
+
+    const workerScriptPath = path.join(dir, 'worker-handler.js');
+    fs.writeFileSync(
+      workerScriptPath,
+      `const id = process.env.FERRYCAT_CONTRACT_ID;\nconsole.log(JSON.stringify({ summary: 'Handled by script for ' + id, ok: true }));\n`,
+      'utf8'
+    );
+
+    const resExecFile = await runCli([
+      'worker',
+      '--agent',
+      'execfile-worker',
+      '--mode=exec',
+      '--once',
+      '--exec-file',
+      workerScriptPath,
+    ]);
+    assert.strictEqual(resExecFile.code, 0, resExecFile.stderr);
+    const execFileOut = JSON.parse(resExecFile.stdout);
+    assert.strictEqual(execFileOut.execution.status, 'COMPLETED');
+    assert.strictEqual(execFileOut.contract_id, execFileContractId);
+
+    // Friendly Zod error formatting check
+    const resBadZod = await runCli(['fulfill', '--id', 'not-a-uuid', '--agent', 'stdin-worker']);
+    assert.notStrictEqual(resBadZod.code, 0);
+    const parsedBadZod = JSON.parse(resBadZod.stderr);
+    assert.ok(
+      parsedBadZod.error.includes('Run "ferrycat-cli fulfill --help" for usage.'),
+      `Expected friendly Zod error with --help hint, got: ${parsedBadZod.error}`
+    );
+
+    // P0-2: worker --mode=exec encountering dirty pointers does NOT auto-retry and burn buffer
+    // It returns TOCTOU_RESCUE_REQUIRED and leaves contract in CLAIMED with toctou_strike = 1
+    const resDispatchToctouExec = await runCli([
+      'dispatch',
+      JSON.stringify({
+        requester_agent: 'cli-tester',
+        target_agent: 'exec-toctou-worker',
+        task_type: 'code_review',
+        title: 'Auto-exec TOCTOU rescue test',
+        context_summary: 'Verify worker does not auto-retry dirty pointers to death',
+        workspace_root: dir,
+        pointers: [{ path: 'file-a.ts' }],
+      }),
+    ]);
+    const toctouExecContractId = JSON.parse(resDispatchToctouExec.stdout).contract_id;
+
+    // Worker script that mutates file-a.ts before fulfill
+    const badWorkerScriptPath = path.join(dir, 'bad-worker-handler.js');
+    fs.writeFileSync(
+      badWorkerScriptPath,
+      `const fs = require('fs');\nfs.writeFileSync(${JSON.stringify(fileA)}, 'dirty from worker\\n');\nconsole.log(JSON.stringify({ summary: 'Attempted fulfill on dirty file', ok: true }));\n`,
+      'utf8'
+    );
+
+    const resToctouExec = await runCli([
+      'worker',
+      '--agent',
+      'exec-toctou-worker',
+      '--mode=exec',
+      '--once',
+      '--exec-file',
+      badWorkerScriptPath,
+    ]);
+    assert.strictEqual(resToctouExec.code, 0, resToctouExec.stderr);
+    const toctouExecOut = JSON.parse(resToctouExec.stdout);
+    assert.strictEqual(toctouExecOut.execution.status, 'TOCTOU_RESCUE_REQUIRED');
+    const verifyEng2 = new FerryCatEngine({ dbPath });
+    const cAfterToctouExec = verifyEng2.inspectMeshState({ contract_id: toctouExecContractId }).contracts[0];
+    verifyEng2.close();
+    assert.strictEqual(cAfterToctouExec.status, 'CLAIMED', 'Contract must stay CLAIMED for operator rescue');
+    assert.strictEqual(cAfterToctouExec.toctou_strike, 1, 'Contract must only have consumed 1 strike');
+    fs.writeFileSync(fileA, origA, 'utf8'); // restore
+
+    console.log('  PASS [11D - --exec-file & Friendly Errors]: worker --exec-file executed cleanly, invalid args printed human-friendly Zod errors, and TOCTOU rescue stopped retry.');
+  } finally {
+    cleanup();
+  }
+}
+
 async function main(): Promise<void> {
   console.log('==============================================================');
   console.log(' FerryCat Offline Verification Suite (Node ' + process.version + ')');
@@ -1105,9 +1470,10 @@ async function main(): Promise<void> {
   await test8_TrustBoundaryAndQueueUnblocking();
   await test9_LifecycleReleaseExtendFail();
   await test10_LegacySchemaMigrationAndCliLifecycle();
+  await test11_PhaseBCliErgonomicsAndToctouBuffer();
 
   console.log('\n==============================================================');
-  console.log(' ALL 10 TEST SUITES PASSED GREEN');
+  console.log(' ALL 11 TEST SUITES PASSED GREEN');
   console.log('==============================================================');
 }
 

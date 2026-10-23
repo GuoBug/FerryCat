@@ -8,7 +8,7 @@
 [![Node.js Version](https://img.shields.io/badge/Node.js-22.5%2B-339933?style=flat&logo=nodedotjs)](https://nodejs.org/)
 [![Native Addons](https://img.shields.io/badge/Native_Addons-0_(node%3Asqlite)-success?style=flat)]()
 [![Protocol](https://img.shields.io/badge/Protocol-MCP_Stdio-orange?style=flat)](https://modelcontextprotocol.io/)
-[![Glama](https://glama.ai/mcp/servers/GuoBug/FerryCat/badge)](https://glama.ai/mcp/servers/GuoBug/FerryCat)
+[![Glama](https://img.shields.io/badge/Glama-MCP_Server-18181b?style=flat)](https://glama.ai/mcp/servers/GuoBug/FerryCat)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 > **FerryCat** (`ferrycat`) is a lightweight, deterministic cross-host AI agent handoff and code review bus built on the Model Context Protocol (MCP) and Node.js built-in `node:sqlite` (WAL mode).  
@@ -93,10 +93,13 @@ Holder-side lifecycle controls on a `CLAIMED` contract (all require `agent_id ==
 | `extend_ttl` | `CLAIMED → CLAIMED` (`claimed_at = now`) | Must be called inside the active window; max 5 renewals per holder; refused once `now ≥ created_at + 4 × queue_ttl_sec`. |
 | `fail_contract` | `CLAIMED → FAILED` (terminal) | Requires a `reason`, stored as `WORKER_FAILED: <reason>`. A report arriving after the window closed becomes `TIMED_OUT` with the reason attached. |
 
-### 2. Full-File SHA-256 Fingerprinting & TOCTOU Closure
+### 2. Full-File SHA-256 Fingerprinting, Pre-Flight Verify & TOCTOU Soft-Failure Buffering (ADR-0004)
 - **Dispatch Snapshot**: `dispatch_contract` reads target files on disk, recording byte `size`, full-file `sha256` (64 hex chars), `first_line`, and `last_line`. If a file was modified within the last 3 seconds, a `warning` is emitted to alert the requester of potential unsaved IDE buffers.
 - **Claim Verification**: `poll_next_task` verifies `Existence -> Byte Size -> Full-File SHA-256` (never rejecting on `mtime_ms` alone to tolerate no-op IDE saves). On mismatch, it waits `150ms` and retries once to rule out transient IDE flushes before marking the contract `POINTER_STALE`.
-- **Fulfill TOCTOU Guard**: `fulfill_contract` re-verifies file fingerprints upon submission, ensuring files were not mutated between `poll_next_task` and `fulfill_contract`.
+- **Pre-Flight Verify (`verify_contract`)**: A strictly read-only check allowing workers or scripts to audit pointer health (`valid: true` vs `valid: false` with dirty files list) before submitting.
+- **TOCTOU Soft-Failure Buffering**: `fulfill_contract` checks on-disk pointer fingerprints. If dirty pointers are detected:
+  - **Strike 1** returns `RETRY_NEEDED`, leaves the contract `CLAIMED`, renews the execution window, and lists dirty files with recovery instructions (`git stash` / `git checkout -- <file>`).
+  - **Strike 2** transitions to terminal `POINTER_STALE` and saves the full submitted review payload into `salvaged_result_json` so review effort is never lost.
 
 ### 3. Bounded Schema Validation (`RETRY_NEEDED` $\le 2$)
 - Outputs are validated against the contract's JSON Schema via cached Ajv validators, with errors flattened into concise single-line paths (e.g., `["/passed: must be boolean"]`).
@@ -168,7 +171,7 @@ Configure the target host's MCP settings with its respective `AGENT_NAME`:
   }
 }
 ```
-> **Note**: Both MCP Stdio and direct CLI invocation (`node --experimental-sqlite dist/cli.js <dispatch|poll|fulfill|release|extend|fail|inspect|worker>`) share the same SQLite WAL database at `~/.ferrycat/mesh.db` and the same Zod validation schemas. In `worker --exec` mode, a non-zero exit of the child command now closes the contract as `FAILED` instead of leaving it `CLAIMED` until the TTL sweep.
+> **Note**: Both MCP Stdio and direct CLI invocation (`ferrycat-cli <dispatch|poll|verify|fulfill|release|extend|fail|inspect|worker>`) share the same SQLite WAL database at `~/.ferrycat/mesh.db` and the same Zod validation schemas. CLI supports `--help` tree, stdin payloads (`--file -` or `-`), `verify` pre-flight check, `inspect` ASCII table formatting (`--target <agent>`), `worker --mode=watch|claim|exec` and direct script execution via `--exec-file <script>`. In `worker --exec` mode, a non-zero exit of the child command closes the contract as `FAILED` instead of leaving it `CLAIMED` until the TTL sweep.
 
 ---
 
@@ -182,6 +185,7 @@ Configure the target host's MCP settings with its respective `AGENT_NAME`:
 | **`release_contract`** | Worker (holder) | Hands a `CLAIMED` contract back to the queue tail as `SUBMITTED`. `retry_count` is preserved (contract-level circuit breaker); `extend_count` is reset. Max 3 releases; refused once past the absolute lifetime deadline. |
 | **`extend_ttl`** | Worker (holder) | Heartbeat: restarts the execution window (`claimed_at = now`), max 5 renewals and bounded total lifetime. |
 | **`fail_contract`** | Worker (holder) | Marks a `CLAIMED` contract terminal `FAILED` with a mandatory `reason`. |
+| **`verify_contract`** | Worker / Any (Read-Only) | Pre-flight check: validates on-disk pointer files against the baseline SHA-256 without mutating contract state (ADR-0004). |
 | **`inspect_mesh_state`** | Any (Read-Only) | Pure read-only query of contract states, outputs, and dynamic `is_logically_expired` flags. |
 
 > 💡 **Architecture Decision Records & Engineering Verification**:

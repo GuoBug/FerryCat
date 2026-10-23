@@ -164,6 +164,45 @@ export interface FingerprintVerificationResult {
   detail?: string;
 }
 
+export interface PointerDriftItem {
+  path: string;
+  reason: 'FILE_MISSING' | 'SIZE_MISMATCH' | 'CONTENT_CHANGED' | 'SECURITY_REJECTED';
+  detail: string;
+}
+
+export function verifyAllPointers(
+  workspaceRoot: string,
+  fingerprints: FileFingerprint[]
+): {
+  valid: boolean;
+  firstFailure?: FingerprintVerificationResult;
+  dirtyFiles: PointerDriftItem[];
+} {
+  const dirtyFiles: PointerDriftItem[] = [];
+  for (const fp of fingerprints) {
+    const res = verifySingleRun(workspaceRoot, [fp]);
+    if (!res.valid && res.reason) {
+      dirtyFiles.push({
+        path: fp.path,
+        reason: res.reason,
+        detail: res.detail ?? res.reason,
+      });
+    }
+  }
+  if (dirtyFiles.length > 0) {
+    return {
+      valid: false,
+      firstFailure: {
+        valid: false,
+        reason: dirtyFiles[0].reason,
+        detail: dirtyFiles[0].detail,
+      },
+      dirtyFiles,
+    };
+  }
+  return { valid: true, dirtyFiles: [] };
+}
+
 export function verifySingleRun(
   workspaceRoot: string,
   fingerprints: FileFingerprint[]
