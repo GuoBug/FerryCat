@@ -50,6 +50,7 @@ export interface ContractRow {
   result_summary: string | null;
   structured_output_json: string | null;
   artifacts_pointers_json: string | null;
+  verified_sha256_json?: string | null;
   error_reason: string | null;
   created_at: number;
   claimed_at: number | null;

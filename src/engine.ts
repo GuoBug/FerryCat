@@ -105,6 +105,7 @@ export class FerryCatEngine {
         result_summary TEXT,
         structured_output_json TEXT,
         artifacts_pointers_json TEXT,
+        verified_sha256_json TEXT,
         error_reason TEXT,
         created_at INTEGER NOT NULL,
         claimed_at INTEGER,
@@ -114,6 +115,12 @@ export class FerryCatEngine {
       CREATE INDEX IF NOT EXISTS idx_contracts_poll
       ON contracts(target_agent, status, created_at);
     `);
+
+    try {
+      this.db.exec('ALTER TABLE contracts ADD COLUMN verified_sha256_json TEXT;');
+    } catch {
+      // Column already exists in existing database
+    }
   }
 
   private resolveAgentIdentity(explicitAgent?: string, roleLabel: string = 'agent'): string {
@@ -257,6 +264,8 @@ export class FerryCatEngine {
        WHERE id = ? AND status = 'SUBMITTED'`
     );
 
+    let lastStaleError: PollNextTaskResult['stale_error'] | undefined;
+
     for (const candidate of candidates) {
       // Step 3: Atomic optimistic lock preemption
       const updateResult = claimStmt.run(nowMs, candidate.id);
@@ -282,15 +291,12 @@ export class FerryCatEngine {
             `UPDATE contracts SET status = 'POINTER_STALE', error_reason = ? WHERE id = ?`
           )
           .run(errMsg, candidate.id);
-        return {
-          has_task: false,
-          status: 'POINTER_STALE',
-          stale_error: {
-            contract_id: candidate.id,
-            reason: 'UNEXPECTED_FS_ERROR',
-            message: `Contract "${candidate.id}" marked POINTER_STALE due to filesystem error (${errMsg}).`,
-          },
+        lastStaleError = {
+          contract_id: candidate.id,
+          reason: 'UNEXPECTED_FS_ERROR',
+          message: `Contract "${candidate.id}" marked POINTER_STALE due to filesystem error (${errMsg}).`,
         };
+        continue;
       }
 
       if (!verification.valid) {
@@ -303,15 +309,12 @@ export class FerryCatEngine {
           )
           .run(errorReason, candidate.id);
 
-        return {
-          has_task: false,
-          status: 'POINTER_STALE',
-          stale_error: {
-            contract_id: candidate.id,
-            reason: verification.reason!,
-            message: `Contract "${candidate.id}" rejected as POINTER_STALE (${errorReason}). Please ask requester "${candidate.requester_agent}" to re-dispatch with fresh file fingerprints.`,
-          },
+        lastStaleError = {
+          contract_id: candidate.id,
+          reason: verification.reason!,
+          message: `Contract "${candidate.id}" rejected as POINTER_STALE (${errorReason}). Please ask requester "${candidate.requester_agent}" to re-dispatch with fresh file fingerprints.`,
         };
+        continue;
       }
 
       return {
@@ -335,6 +338,14 @@ export class FerryCatEngine {
       };
     }
 
+    if (lastStaleError) {
+      return {
+        has_task: false,
+        status: 'POINTER_STALE',
+        stale_error: lastStaleError,
+      };
+    }
+
     return {
       has_task: false,
       message: `All candidate contracts for "${agentId}" were preempted by concurrent workers.`,
@@ -353,6 +364,12 @@ export class FerryCatEngine {
 
     if (!row) {
       throw new Error(`Contract "${input.contract_id}" not found.`);
+    }
+
+    if (row.target_agent !== agentId) {
+      throw new Error(
+        `Permission denied: contract "${row.id}" was assigned to "${row.target_agent}", but fulfillment was attempted by "${agentId}".`
+      );
     }
 
     if (row.status !== 'CLAIMED') {
@@ -399,6 +416,9 @@ export class FerryCatEngine {
         message: `Contract "${row.id}" rejected at fulfill time as POINTER_STALE because target file changed during execution (${toctouReason}).`,
       };
     }
+
+    const verifiedShaMap = Object.fromEntries(fingerprints.map((fp) => [fp.path, fp.sha256]));
+    const verifiedSha256Json = JSON.stringify(verifiedShaMap);
 
     // Validate against contract_schema if defined
     if (row.contract_schema_json) {
@@ -456,6 +476,7 @@ export class FerryCatEngine {
              result_summary = ?,
              structured_output_json = ?,
              artifacts_pointers_json = ?,
+             verified_sha256_json = ?,
              completed_at = ?
          WHERE id = ? AND status = 'CLAIMED'`
       )
@@ -463,6 +484,7 @@ export class FerryCatEngine {
         input.result_summary,
         input.structured_output ? JSON.stringify(input.structured_output) : null,
         input.artifacts_pointers ? JSON.stringify(input.artifacts_pointers) : null,
+        verifiedSha256Json,
         nowMs,
         row.id
       );
@@ -544,6 +566,7 @@ export class FerryCatEngine {
         artifacts_pointers: r.artifacts_pointers_json
           ? JSON.parse(r.artifacts_pointers_json)
           : null,
+        verified_sha256: r.verified_sha256_json ? JSON.parse(r.verified_sha256_json) : null,
         error_reason: r.error_reason,
         created_at: r.created_at,
         claimed_at: r.claimed_at,

@@ -40,6 +40,37 @@ export function assertSafePointerPath(workspaceRoot: string, rawPath: string): s
     );
   }
 
+  // Symlink physical resolution and real path boundary guard
+  if (fs.existsSync(resolvedTarget)) {
+    try {
+      const realTarget = fs.realpathSync(resolvedTarget);
+      const realRoot = fs.existsSync(resolvedRoot) ? fs.realpathSync(resolvedRoot) : resolvedRoot;
+      const realRelative = path.relative(realRoot, realTarget);
+
+      if (realRelative.startsWith('..') || path.isAbsolute(realRelative)) {
+        throw new SecurityPolicyError(
+          `Pointer rejected: "${rawPath}" resolves to symlink target "${realTarget}" outside workspace_root "${workspaceRoot}".`
+        );
+      }
+
+      // Re-verify real target against sensitive blacklist to prevent symlink masking (e.g. foo.ts -> .env)
+      const normalizedReal = realTarget.replace(/\\/g, '/');
+      for (const pattern of SENSITIVE_PATTERNS) {
+        if (pattern.test(normalizedReal) || pattern.test(path.basename(normalizedReal))) {
+          throw new SecurityPolicyError(
+            `Pointer rejected by security blacklist: symlink target "${realTarget}" matches sensitive file pattern.`
+          );
+        }
+      }
+
+      return realTarget;
+    } catch (err) {
+      if (err instanceof SecurityPolicyError) {
+        throw err;
+      }
+    }
+  }
+
   return resolvedTarget;
 }
 
