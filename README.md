@@ -89,7 +89,7 @@ Holder-side lifecycle controls on a `CLAIMED` contract (all require `agent_id ==
 
 | Call | Transition | Guard rails |
 | :--- | :--- | :--- |
-| `release_contract` | `CLAIMED → SUBMITTED` (tail of queue, fresh queue window) | Resets `retry_count` / `extend_count` so the next holder is not circuit-broken by inherited failures; max 3 releases per contract. |
+| `release_contract` | `CLAIMED → SUBMITTED` (tail of queue, fresh queue window) | Resets `extend_count` (renewal budget is per holder) but **preserves** `retry_count`: the schema-failure circuit breaker is a contract-level quota, so releasing cannot launder retry budget. Refused past the absolute lifetime deadline. Max 3 releases per contract. |
 | `extend_ttl` | `CLAIMED → CLAIMED` (`claimed_at = now`) | Must be called inside the active window; max 5 renewals per holder; refused once `now ≥ created_at + 4 × queue_ttl_sec`. |
 | `fail_contract` | `CLAIMED → FAILED` (terminal) | Requires a `reason`, stored as `WORKER_FAILED: <reason>`. A report arriving after the window closed becomes `TIMED_OUT` with the reason attached. |
 
@@ -179,7 +179,7 @@ Configure the target host's MCP settings with its respective `AGENT_NAME`:
 | **`dispatch_contract`** | Requester | Enforces path blacklist $\to$ computes full-file SHA-256 & line bounds $\to$ inserts `SUBMITTED`. |
 | **`poll_next_task`** | Worker | Sweeps expired TTLs (read-before-write) $\to$ claims via `changes === 1` (`CLAIMED`) $\to$ verifies disk SHA-256 (or marks `POINTER_STALE`). |
 | **`fulfill_contract`** | Worker | Re-verifies SHA-256 (TOCTOU guard) $\to$ validates Ajv JSON Schema ($\le 2$ retries via `RETRY_NEEDED`, 3rd marks `VALIDATION_FAILED`) $\to$ marks `COMPLETED`. |
-| **`release_contract`** | Worker (holder) | Hands a `CLAIMED` contract back to the queue tail as `SUBMITTED`, resetting `retry_count` (max 3 releases). |
+| **`release_contract`** | Worker (holder) | Hands a `CLAIMED` contract back to the queue tail as `SUBMITTED`. `retry_count` is preserved (contract-level circuit breaker); `extend_count` is reset. Max 3 releases; refused once past the absolute lifetime deadline. |
 | **`extend_ttl`** | Worker (holder) | Heartbeat: restarts the execution window (`claimed_at = now`), max 5 renewals and bounded total lifetime. |
 | **`fail_contract`** | Worker (holder) | Marks a `CLAIMED` contract terminal `FAILED` with a mandatory `reason`. |
 | **`inspect_mesh_state`** | Any (Read-Only) | Pure read-only query of contract states, outputs, and dynamic `is_logically_expired` flags. |

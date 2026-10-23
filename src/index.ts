@@ -123,7 +123,7 @@ function toToolResult(run: () => unknown) {
 // Tool 5: release_contract
 server.tool(
   'release_contract',
-  'Hand a CLAIMED contract you hold back to the queue (SUBMITTED, tail position, retry_count reset) when it was claimed by mistake or cannot be handled here.',
+  'Hand a CLAIMED contract you hold back to the queue (SUBMITTED, tail position, fresh queue window) when it was claimed by mistake or cannot be handled here. Preserves the contract-level retry_count quota (extend_count is reset for the next holder). Max 3 releases.',
   ReleaseContractShape,
   async (args) => toToolResult(() => engine.releaseContract(args))
 );

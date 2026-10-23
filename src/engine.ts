@@ -612,8 +612,10 @@ export class FerryCatEngine {
 
   /**
    * CLAIMED -> SUBMITTED. Hands a contract back to the queue (tail position) with a fresh
-   * queue window. retry_count and extend_count are reset so the next holder does not inherit
-   * the previous holder's failed attempts and get circuit-broken unfairly.
+   * queue window. extend_count is reset because the renewal budget belongs to the holder;
+   * retry_count is deliberately PRESERVED because the schema-failure circuit breaker is a
+   * contract-level quota. Resetting it would let a holder launder retry budget by cycling
+   * release -> re-claim. Refused once past the absolute lifetime deadline (-> TIMED_OUT).
    */
   public releaseContract(
     input: ReleaseContractInput,

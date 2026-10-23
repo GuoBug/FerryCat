@@ -89,7 +89,7 @@ MCP 官方的 `Tasks` 规范（2025-11 / 2026-07）解决的是**单条 `Client 
 
 | 调用 | 状态流转 | 护栏 |
 | :--- | :--- | :--- |
-| `release_contract` | `CLAIMED → SUBMITTED`（回到队尾，排队窗口重新计时） | 同时清零 `retry_count` / `extend_count`，避免下一位持单者继承前任的失败次数被冤枉熔断；单张工单最多退回 3 次。 |
+| `release_contract` | `CLAIMED → SUBMITTED`（回到队尾，排队窗口重新计时） | 清零 `extend_count`（续期额度属于当前持有者），但**保留** `retry_count`：Schema 失败熔断是工单级配额，退单不能洗掉已消耗的重试预算。超出绝对生命期上限时拒绝。单张工单最多退回 3 次。 |
 | `extend_ttl` | `CLAIMED → CLAIMED`（`claimed_at = now`） | 必须在当前执行窗口内调用；每位持单者最多续期 5 次；`now ≥ created_at + 4 × queue_ttl_sec` 后拒绝续期。 |
 | `fail_contract` | `CLAIMED → FAILED`（终态） | 必须提供 `reason`，落库为 `WORKER_FAILED: <reason>`；若窗口已过期才上报，则置为 `TIMED_OUT` 并保留失败原因。 |
 
@@ -181,7 +181,7 @@ npm test
 | **`dispatch_contract`** | 发起方 (Requester) | 校验路径黑名单 $\to$ 计算全文件 SHA-256 与首末行快照 $\to$ 写入 `SUBMITTED`。 |
 | **`poll_next_task`** | 接收方 (Worker) | 先读后写清理超时工单 $\to$ `changes === 1` 原子抢占为 `CLAIMED` $\to$ 校验文件指纹（不匹配则置为 `POINTER_STALE`）。 |
 | **`fulfill_contract`** | 接收方 (Worker) | 二次复核文件指纹（防 TOCTOU）$\to$ 校验 Ajv JSON Schema（失败 $\le 2$ 次返回 `RETRY_NEEDED`，第 3 次置为 `VALIDATION_FAILED`）$\to$ 通过则置为 `COMPLETED`。 |
-| **`release_contract`** | 持单方 (Worker) | 将 `CLAIMED` 工单退回队尾重新置为 `SUBMITTED`，清零 `retry_count`（最多退回 3 次）。 |
+| **`release_contract`** | 持单方 (Worker) | 将 `CLAIMED` 工单退回队尾重新置为 `SUBMITTED`。保留 `retry_count`（工单级熔断配额），清零 `extend_count`。最多退回 3 次；超出绝对生命期上限时拒绝。 |
 | **`extend_ttl`** | 持单方 (Worker) | 心跳续期：重置执行窗口（`claimed_at = now`），最多 5 次，总生命周期有上限。 |
 | **`fail_contract`** | 持单方 (Worker) | 携带必填 `reason` 将 `CLAIMED` 工单置为终态 `FAILED`。 |
 | **`inspect_mesh_state`** | 任意方 (Read-Only) | 纯只读查询工单状态、结构化产出与错误原因，动态计算 `is_logically_expired`。 |
