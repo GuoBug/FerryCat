@@ -399,7 +399,7 @@ async function test5_DualStageTtlAndHappyPath(): Promise<void> {
 }
 
 async function test6_McpStdioHandshakeAndToolDiscovery(): Promise<void> {
-  console.log('\n[Test 6] MCP Stdio Server Handshake & 4-Tool Registration Check');
+  console.log('\n[Test 6] MCP Stdio Server Handshake & 7-Tool Registration Check');
   const distIndex = path.resolve(__dirname, '../dist/index.js');
   const { dbPath, cleanup } = createTempWorkspace('mcp-stdio');
 
@@ -462,9 +462,12 @@ async function test6_McpStdioHandshakeAndToolDiscovery(): Promise<void> {
     const toolNames = toolsResp.result.tools.map((t: any) => t.name).sort();
     assert.deepEqual(toolNames, [
       'dispatch_contract',
+      'extend_ttl',
+      'fail_contract',
       'fulfill_contract',
       'inspect_mesh_state',
       'poll_next_task',
+      'release_contract',
     ]);
     console.log(`  PASS: MCP Server stdio handshake succeeded; registered tools: ${toolNames.join(', ')}`);
   } finally {
@@ -791,6 +794,282 @@ async function test8_TrustBoundaryAndQueueUnblocking(): Promise<void> {
   }
 }
 
+async function test9_LifecycleReleaseExtendFail(): Promise<void> {
+  console.log('\n[Test 9] Phase A Lifecycle: Tiered TTL / release_contract / extend_ttl / fail_contract');
+  const { dir, dbPath, cleanup } = createTempWorkspace('lifecycle');
+  const engine = new FerryCatEngine({ dbPath, defaultAgentName: 'antigravity', fingerprintRetryDelayMs: 10 });
+  const S = 1000;
+
+  try {
+    fs.writeFileSync(path.join(dir, 'life.ts'), 'export const life = 1;\n', 'utf8');
+    const base = {
+      task_type: 'implementation' as const,
+      title: 'Lifecycle',
+      context_summary: 'Lifecycle test',
+      workspace_root: dir,
+      pointers: [{ path: 'life.ts' }],
+    };
+
+    // 9A: Tiered default exec TTL by task_type, explicit override wins
+    const t0 = 1_700_000_000_000;
+    const expectedTtl: Record<string, number> = {
+      code_review: 1800,
+      architecture_audit: 1800,
+      implementation: 300,
+      test_generation: 300,
+    };
+    for (const [taskType, ttl] of Object.entries(expectedTtl)) {
+      engine.dispatchContract({ ...base, task_type: taskType as any, target_agent: `ttl-${taskType}` }, t0);
+      const polled = engine.pollNextTask({ agent_id: `ttl-${taskType}` }, t0 + S);
+      assert.strictEqual(polled.contract?.exec_ttl_sec, ttl, `${taskType} default exec_ttl_sec`);
+    }
+    engine.dispatchContract({ ...base, task_type: 'code_review', target_agent: 'ttl-override', exec_ttl_sec: 42 }, t0);
+    assert.strictEqual(engine.pollNextTask({ agent_id: 'ttl-override' }, t0 + S).contract?.exec_ttl_sec, 42);
+    console.log('  PASS [9A - Tiered TTL]: review/audit=1800s, implementation/test=300s, explicit exec_ttl_sec overrides.');
+
+    // 9B: release_contract resets retry_count, re-queues at tail, enforces holder + release cap
+    const schema = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' } } };
+    const relA = engine.dispatchContract({ ...base, target_agent: 'rel', title: 'A', contract_schema: schema }, t0);
+    const relB = engine.dispatchContract({ ...base, target_agent: 'rel', title: 'B' }, t0 + 1);
+    assert.strictEqual(engine.pollNextTask({ agent_id: 'rel' }, t0 + S).contract?.contract_id, relA.contract_id);
+    const badFulfill = engine.fulfillContract(
+      { contract_id: relA.contract_id, agent_id: 'rel', result_summary: 'bad', structured_output: { ok: 'no' } },
+      t0 + 2 * S
+    );
+    assert.strictEqual(badFulfill.status, 'RETRY_NEEDED');
+
+    assert.throws(
+      () => engine.releaseContract({ contract_id: relA.contract_id, agent_id: 'imposter' }, t0 + 3 * S),
+      /Permission denied: .* but release was attempted by "imposter"/
+    );
+    const released = engine.releaseContract(
+      { contract_id: relA.contract_id, agent_id: 'rel', reason: 'missing local toolchain' },
+      t0 + 3 * S
+    );
+    assert.strictEqual(released.ok, true);
+    assert.strictEqual(released.status, 'SUBMITTED');
+    assert.strictEqual(released.release_count, 1);
+    const afterRelease = engine.inspectMeshState({ contract_id: relA.contract_id }, t0 + 3 * S).contracts[0];
+    assert.strictEqual(afterRelease.status, 'SUBMITTED');
+    assert.strictEqual(afterRelease.retry_count, 0, 'retry_count must be reset on release');
+    assert.strictEqual(afterRelease.claimed_at, null);
+    assert.strictEqual(afterRelease.error_reason, 'RELEASED_BY_HOLDER: missing local toolchain');
+    assert.throws(
+      () => engine.releaseContract({ contract_id: relA.contract_id, agent_id: 'rel' }, t0 + 4 * S),
+      /expected status 'CLAIMED', but current status is 'SUBMITTED'/
+    );
+
+    // Released contract goes to the tail: B (older queue position) is claimed first
+    assert.strictEqual(engine.pollNextTask({ agent_id: 'rel' }, t0 + 5 * S).contract?.contract_id, relB.contract_id);
+    assert.strictEqual(engine.pollNextTask({ agent_id: 'rel' }, t0 + 6 * S).contract?.contract_id, relA.contract_id);
+
+    // New holder gets the full retry budget again (would be circuit-broken at 2 inherited failures otherwise)
+    const retryAfterRelease = engine.fulfillContract(
+      { contract_id: relA.contract_id, agent_id: 'rel', result_summary: 'bad', structured_output: { ok: 'no' } },
+      t0 + 7 * S
+    );
+    assert.strictEqual(retryAfterRelease.status, 'RETRY_NEEDED');
+    assert.strictEqual(retryAfterRelease.retry_count, 1);
+
+    // Release cap: releases 2 and 3 succeed, 4th is refused and the contract stays CLAIMED
+    let tRel = t0 + 10 * S;
+    for (let n = 2; n <= 3; n++) {
+      assert.strictEqual(engine.releaseContract({ contract_id: relA.contract_id, agent_id: 'rel' }, tRel).release_count, n);
+      assert.strictEqual(engine.pollNextTask({ agent_id: 'rel' }, tRel + S).contract?.contract_id, relA.contract_id);
+      tRel += 2 * S;
+    }
+    const capped = engine.releaseContract({ contract_id: relA.contract_id, agent_id: 'rel' }, tRel);
+    assert.strictEqual(capped.ok, false);
+    assert.strictEqual(capped.status, 'CLAIMED');
+    assert.match(capped.message, /fail_contract/);
+    console.log('  PASS [9B - release_contract]: holder-only, retry_count reset, tail re-queue, capped at 3 releases.');
+
+    // Fresh queue window on release: original queue TTL (60s) passed, contract must not be swept
+    const relC = engine.dispatchContract({ ...base, target_agent: 'rel-window', queue_ttl_sec: 60 }, t0);
+    engine.pollNextTask({ agent_id: 'rel-window' }, t0 + 50 * S);
+    engine.releaseContract({ contract_id: relC.contract_id, agent_id: 'rel-window' }, t0 + 70 * S);
+    const reclaimed = engine.pollNextTask({ agent_id: 'rel-window' }, t0 + 100 * S);
+    assert.strictEqual(reclaimed.contract?.contract_id, relC.contract_id, 'released contract needs a fresh queue window');
+    console.log('  PASS [9B - Fresh Queue Window]: contract released after its original queue TTL was re-claimable.');
+
+    // 9C: extend_ttl restarts the window, capped at 5, must be called inside the window
+    const ext = engine.dispatchContract({ ...base, target_agent: 'ext', exec_ttl_sec: 300 }, t0);
+    engine.pollNextTask({ agent_id: 'ext' }, t0);
+    assert.throws(
+      () => engine.extendTtl({ contract_id: ext.contract_id, agent_id: 'imposter' }, t0 + S),
+      /Permission denied: .* but extend was attempted by "imposter"/
+    );
+    let tExt = t0;
+    for (let n = 1; n <= 5; n++) {
+      tExt += 200 * S;
+      const extended = engine.extendTtl({ contract_id: ext.contract_id, agent_id: 'ext' }, tExt);
+      assert.strictEqual(extended.ok, true);
+      assert.strictEqual(extended.extend_count, n);
+      assert.strictEqual(extended.expires_at, tExt + 300 * S);
+    }
+    // 1000s after claim with a 300s exec TTL: still alive thanks to renewals
+    const aliveState = engine.inspectMeshState({ contract_id: ext.contract_id }, tExt + 100 * S).contracts[0];
+    assert.strictEqual(aliveState.is_logically_expired, false);
+    assert.strictEqual(aliveState.extend_count, 5);
+    const overLimit = engine.extendTtl({ contract_id: ext.contract_id, agent_id: 'ext' }, tExt + 100 * S);
+    assert.strictEqual(overLimit.ok, false);
+    assert.strictEqual(overLimit.status, 'CLAIMED');
+    const tooLate = engine.extendTtl({ contract_id: ext.contract_id, agent_id: 'ext' }, tExt + 301 * S);
+    assert.strictEqual(tooLate.status, 'TIMED_OUT');
+    assert.strictEqual(engine.inspectMeshState({ contract_id: ext.contract_id }).contracts[0].status, 'TIMED_OUT');
+
+    // Absolute lifetime cap: created_at + 4 * queue_ttl_sec
+    const capC = engine.dispatchContract({ ...base, target_agent: 'ext-cap', queue_ttl_sec: 60, exec_ttl_sec: 300 }, t0);
+    engine.pollNextTask({ agent_id: 'ext-cap' }, t0 + 10 * S);
+    assert.strictEqual(engine.extendTtl({ contract_id: capC.contract_id, agent_id: 'ext-cap' }, t0 + 200 * S).ok, true);
+    const lifetimeCapped = engine.extendTtl({ contract_id: capC.contract_id, agent_id: 'ext-cap' }, t0 + 250 * S);
+    assert.strictEqual(lifetimeCapped.ok, false);
+    assert.match(lifetimeCapped.message, /absolute lifetime cap/);
+    console.log('  PASS [9C - extend_ttl]: window restarted 5x, 6th refused, expired window -> TIMED_OUT, lifetime cap enforced.');
+
+    // 9D: fail_contract -> terminal FAILED with reason; late report -> TIMED_OUT with reason preserved
+    const fl = engine.dispatchContract({ ...base, target_agent: 'fl', exec_ttl_sec: 300 }, t0);
+    engine.pollNextTask({ agent_id: 'fl' }, t0);
+    assert.throws(
+      () => engine.failContract({ contract_id: fl.contract_id, agent_id: 'imposter', reason: 'x' }, t0 + S),
+      /Permission denied: .* but fail was attempted by "imposter"/
+    );
+    assert.throws(
+      () => engine.failContract({ contract_id: fl.contract_id, agent_id: 'fl', reason: '   ' }, t0 + S),
+      /reason must not be empty/
+    );
+    const failed = engine.failContract(
+      { contract_id: fl.contract_id, agent_id: 'fl', reason: 'Compiler not installed' },
+      t0 + 2 * S
+    );
+    assert.strictEqual(failed.ok, true);
+    assert.strictEqual(failed.status, 'FAILED');
+    const failedState = engine.inspectMeshState({ status: 'FAILED' }, t0 + 2 * S).contracts;
+    assert.strictEqual(failedState.length, 1);
+    assert.strictEqual(failedState[0].error_reason, 'WORKER_FAILED: Compiler not installed');
+    assert.strictEqual(failedState[0].completed_at, t0 + 2 * S);
+    assert.throws(
+      () => engine.failContract({ contract_id: fl.contract_id, agent_id: 'fl', reason: 'again' }, t0 + 3 * S),
+      /current status is 'FAILED'/
+    );
+
+    const flLate = engine.dispatchContract({ ...base, target_agent: 'fl-late', exec_ttl_sec: 300 }, t0);
+    engine.pollNextTask({ agent_id: 'fl-late' }, t0);
+    const late = engine.failContract({ contract_id: flLate.contract_id, agent_id: 'fl-late', reason: 'gave up' }, t0 + 400 * S);
+    assert.strictEqual(late.status, 'TIMED_OUT');
+    assert.strictEqual(
+      engine.inspectMeshState({ contract_id: flLate.contract_id }).contracts[0].error_reason,
+      'EXEC_TTL_EXPIRED (late failure report: gave up)'
+    );
+    console.log('  PASS [9D - fail_contract]: holder-only FAILED terminal with reason; late report -> TIMED_OUT keeps reason.');
+
+    // 9E: RETRY_NEEDED renews the execution window
+    const rn = engine.dispatchContract({ ...base, target_agent: 'rn', exec_ttl_sec: 300, contract_schema: schema }, t0);
+    engine.pollNextTask({ agent_id: 'rn' }, t0);
+    const rnRetry = engine.fulfillContract(
+      { contract_id: rn.contract_id, agent_id: 'rn', result_summary: 'bad', structured_output: {} },
+      t0 + 250 * S
+    );
+    assert.strictEqual(rnRetry.status, 'RETRY_NEEDED');
+    const rnDone = engine.fulfillContract(
+      { contract_id: rn.contract_id, agent_id: 'rn', result_summary: 'fixed', structured_output: { ok: true } },
+      t0 + 500 * S
+    );
+    assert.strictEqual(rnDone.status, 'COMPLETED', 'fix attempt after RETRY_NEEDED must get a renewed window');
+    console.log('  PASS [9E - Retry Renewal]: RETRY_NEEDED at 250s renewed the 300s window; fix at 500s COMPLETED.');
+  } finally {
+    engine.close();
+    cleanup();
+  }
+}
+
+async function test10_LegacySchemaMigrationAndCliLifecycle(): Promise<void> {
+  console.log('\n[Test 10] Legacy DB Migration + CLI release/extend/fail + Exec Failure Auto-FAILED');
+  const { dir, dbPath, cleanup } = createTempWorkspace('migration');
+
+  try {
+    fs.writeFileSync(path.join(dir, 'legacy.ts'), 'export const legacy = true;\n', 'utf8');
+    const base = {
+      requester_agent: 'gui-host',
+      task_type: 'implementation' as const,
+      title: 'Legacy',
+      context_summary: 'Legacy row',
+      workspace_root: dir,
+      pointers: [{ path: 'legacy.ts' }],
+    };
+
+    // 10A: Simulate a v0.1 database (no queued_at/extend_count/release_count) holding a pending row
+    const seed = new FerryCatEngine({ dbPath });
+    const legacy = seed.dispatchContract({ ...base, target_agent: 'legacy-worker' });
+    seed.close();
+    const { DatabaseSync } = await import('node:sqlite');
+    const raw = new DatabaseSync(dbPath);
+    raw.exec('DROP INDEX idx_contracts_queue_order;');
+    raw.exec('ALTER TABLE contracts DROP COLUMN queued_at;');
+    raw.exec('ALTER TABLE contracts DROP COLUMN extend_count;');
+    raw.exec('ALTER TABLE contracts DROP COLUMN release_count;');
+    raw.close();
+
+    const migrated = new FerryCatEngine({ dbPath });
+    const legacyPoll = migrated.pollNextTask({ agent_id: 'legacy-worker' });
+    assert.strictEqual(legacyPoll.contract?.contract_id, legacy.contract_id, 'legacy row (queued_at NULL) must be claimable');
+    const legacyExt = migrated.extendTtl({ contract_id: legacy.contract_id, agent_id: 'legacy-worker' });
+    assert.strictEqual(legacyExt.ok, true);
+    assert.strictEqual(legacyExt.extend_count, 1);
+    migrated.close();
+    console.log('  PASS [10A - Legacy Migration]: v0.1 schema upgraded in place; NULL queued_at row claimed and extended.');
+
+    // 10B: CLI release / extend / fail subcommands
+    const cliPath = path.resolve('dist/cli.js');
+    const execCli = (args: string[]): Promise<{ code: number; stdout: string; stderr: string }> =>
+      new Promise((resolve) => {
+        execFile(
+          process.execPath,
+          ['--experimental-sqlite', cliPath, ...args],
+          { env: { ...process.env, FERRYCAT_DB_PATH: dbPath, AGENT_NAME: '' } },
+          (err, stdout, stderr) => resolve({ code: err ? ((err.code as number) ?? 1) : 0, stdout, stderr })
+        );
+      });
+
+    const engine = new FerryCatEngine({ dbPath });
+    const cliC = engine.dispatchContract({ ...base, target_agent: 'cli-life' });
+    engine.pollNextTask({ agent_id: 'cli-life' });
+
+    const resExtend = await execCli(['extend', '--agent', 'cli-life', '--id', cliC.contract_id]);
+    assert.strictEqual(resExtend.code, 0, resExtend.stderr);
+    assert.strictEqual(JSON.parse(resExtend.stdout).extend_count, 1);
+
+    const resRelease = await execCli(['release', '--agent', 'cli-life', '--id', cliC.contract_id, '--reason', 'wrong branch']);
+    assert.strictEqual(resRelease.code, 0, resRelease.stderr);
+    assert.strictEqual(JSON.parse(resRelease.stdout).status, 'SUBMITTED');
+
+    engine.pollNextTask({ agent_id: 'cli-life' });
+    const resFailNoReason = await execCli(['fail', '--agent', 'cli-life', '--id', cliC.contract_id]);
+    assert.notStrictEqual(resFailNoReason.code, 0, 'fail without --reason must be rejected');
+    const resFail = await execCli(['fail', '--agent', 'cli-life', '--id', cliC.contract_id, '--reason', 'cannot reproduce']);
+    assert.strictEqual(resFail.code, 0, resFail.stderr);
+    assert.strictEqual(JSON.parse(resFail.stdout).status, 'FAILED');
+    console.log('  PASS [10B - CLI Lifecycle]: extend -> release -> re-claim -> fail via ferrycat-cli subcommands.');
+
+    // 10C: worker --exec non-zero exit closes the loop as FAILED instead of lingering in CLAIMED
+    const execC = engine.dispatchContract({ ...base, target_agent: 'exec-fail' });
+    engine.close();
+    const resExec = await execCli(['worker', '--agent', 'exec-fail', '--once', '--exec', 'node -e "process.exit(3)"']);
+    assert.strictEqual(resExec.code, 0, resExec.stderr);
+    const execOut = JSON.parse(resExec.stdout);
+    assert.strictEqual(execOut.execution.status, 'EXEC_FAILED');
+    assert.strictEqual(execOut.execution.contract_status, 'FAILED');
+    const verify = new FerryCatEngine({ dbPath });
+    const execState = verify.inspectMeshState({ contract_id: execC.contract_id }).contracts[0];
+    verify.close();
+    assert.strictEqual(execState.status, 'FAILED');
+    assert.match(String(execState.error_reason), /^WORKER_FAILED: External exec command failed with code 3/);
+    console.log('  PASS [10C - Exec Failure Closure]: non-zero --exec exit transitioned contract to FAILED with reason.');
+  } finally {
+    cleanup();
+  }
+}
+
 async function main(): Promise<void> {
   console.log('==============================================================');
   console.log(' FerryCat Offline Verification Suite (Node ' + process.version + ')');
@@ -804,9 +1083,11 @@ async function main(): Promise<void> {
   await test6_McpStdioHandshakeAndToolDiscovery();
   await test7_CliWorkerSubprocess();
   await test8_TrustBoundaryAndQueueUnblocking();
+  await test9_LifecycleReleaseExtendFail();
+  await test10_LegacySchemaMigrationAndCliLifecycle();
 
   console.log('\n==============================================================');
-  console.log(' ALL 8 TEST SUITES PASSED GREEN');
+  console.log(' ALL 10 TEST SUITES PASSED GREEN');
   console.log('==============================================================');
 }
 

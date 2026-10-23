@@ -13,13 +13,50 @@ import type {
   ContractRow,
   DispatchContractInput,
   DispatchContractResult,
+  ExtendTtlInput,
+  ExtendTtlResult,
+  FailContractInput,
+  FailContractResult,
   FileFingerprint,
   FulfillContractInput,
   FulfillContractResult,
   InspectMeshStateInput,
   PollNextTaskInput,
   PollNextTaskResult,
+  ReleaseContractInput,
+  ReleaseContractResult,
+  TaskType,
 } from './types.js';
+
+/** Default queue window (SUBMITTED) in seconds. */
+export const DEFAULT_QUEUE_TTL_SEC = 1800;
+
+/**
+ * Tiered default execution window (CLAIMED) per task type.
+ * Review/audit work usually involves deep reasoning or a human in the loop,
+ * while implementation/test generation is expected to run as an automated pipeline.
+ */
+export const DEFAULT_EXEC_TTL_SEC_BY_TASK_TYPE: Readonly<Record<TaskType, number>> = {
+  code_review: 1800,
+  architecture_audit: 1800,
+  implementation: 300,
+  test_generation: 300,
+};
+
+/** Max extend_ttl calls per holder (counter resets when the contract is released). */
+export const MAX_TTL_EXTENSIONS = 5;
+
+/** Max times a contract may be released back to the queue before the holder must fail it. */
+export const MAX_RELEASES = 3;
+
+/**
+ * extend_ttl is refused once now >= created_at + LIFETIME_QUEUE_TTL_MULTIPLIER * queue_ttl_sec,
+ * bounding the total lifetime of a contract even under a misbehaving heartbeat loop.
+ */
+export const LIFETIME_QUEUE_TTL_MULTIPLIER = 4;
+
+/** SQL expression for the start of the current queue window (NULL-safe for rows from older hosts). */
+const QUEUE_START_SQL = 'COALESCE(queued_at, created_at)';
 
 export function expandTilde(filePath: string): string {
   const trimmed = filePath.trim();
@@ -108,19 +145,44 @@ export class FerryCatEngine {
         verified_sha256_json TEXT,
         error_reason TEXT,
         created_at INTEGER NOT NULL,
+        queued_at INTEGER,
         claimed_at INTEGER,
-        completed_at INTEGER
+        completed_at INTEGER,
+        extend_count INTEGER NOT NULL DEFAULT 0,
+        release_count INTEGER NOT NULL DEFAULT 0
       );
 
       CREATE INDEX IF NOT EXISTS idx_contracts_poll
       ON contracts(target_agent, status, created_at);
     `);
 
-    try {
-      this.db.exec('ALTER TABLE contracts ADD COLUMN verified_sha256_json TEXT;');
-    } catch {
-      // Column already exists in existing database
+    // Additive, idempotent column migrations for databases created by older FerryCat versions.
+    // Older hosts sharing the same mesh.db keep working: they simply leave the new columns at defaults.
+    const migrations: Array<[column: string, ddl: string]> = [
+      ['verified_sha256_json', 'TEXT'],
+      ['queued_at', 'INTEGER'],
+      ['extend_count', 'INTEGER NOT NULL DEFAULT 0'],
+      ['release_count', 'INTEGER NOT NULL DEFAULT 0'],
+    ];
+    const existingColumns = new Set(
+      (this.db.prepare('PRAGMA table_info(contracts)').all() as Array<{ name: string }>).map(
+        (c) => c.name
+      )
+    );
+    for (const [column, ddl] of migrations) {
+      if (existingColumns.has(column)) continue;
+      try {
+        this.db.exec(`ALTER TABLE contracts ADD COLUMN ${column} ${ddl};`);
+      } catch {
+        // Another process added the column concurrently
+      }
     }
+
+    // Poll order follows the current queue window so released contracts go to the tail.
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_contracts_queue_order
+      ON contracts(target_agent, status, ${QUEUE_START_SQL});
+    `);
   }
 
   private resolveAgentIdentity(explicitAgent?: string, roleLabel: string = 'agent'): string {
@@ -154,15 +216,16 @@ export class FerryCatEngine {
     );
 
     const contractId = `fc_${nowMs}_${crypto.randomBytes(4).toString('hex')}`;
-    const queueTtlSec = input.queue_ttl_sec ?? 1800;
-    const execTtlSec = input.exec_ttl_sec ?? 300;
+    const queueTtlSec = input.queue_ttl_sec ?? DEFAULT_QUEUE_TTL_SEC;
+    const execTtlSec =
+      input.exec_ttl_sec ?? DEFAULT_EXEC_TTL_SEC_BY_TASK_TYPE[input.task_type] ?? 300;
 
     const stmt = this.db.prepare(`
       INSERT INTO contracts (
         id, requester_agent, target_agent, task_type, title, context_summary,
         workspace_root, pointers_json, contract_schema_json, status,
-        retry_count, max_retries, queue_ttl_sec, exec_ttl_sec, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SUBMITTED', 0, 2, ?, ?, ?)
+        retry_count, max_retries, queue_ttl_sec, exec_ttl_sec, created_at, queued_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SUBMITTED', 0, 2, ?, ?, ?, ?)
     `);
 
     stmt.run(
@@ -177,6 +240,7 @@ export class FerryCatEngine {
       input.contract_schema ? JSON.stringify(input.contract_schema) : null,
       queueTtlSec,
       execTtlSec,
+      nowMs,
       nowMs
     );
 
@@ -211,7 +275,7 @@ export class FerryCatEngine {
     const countRow = this.db
       .prepare(
         `SELECT COUNT(*) AS c FROM contracts
-         WHERE (status = 'SUBMITTED' AND (created_at + queue_ttl_sec * 1000) < ?)
+         WHERE (status = 'SUBMITTED' AND (${QUEUE_START_SQL} + queue_ttl_sec * 1000) < ?)
             OR (status = 'CLAIMED'   AND (claimed_at + exec_ttl_sec * 1000) < ?)`
       )
       .get(nowMs, nowMs) as { c: number | bigint } | undefined;
@@ -225,7 +289,7 @@ export class FerryCatEngine {
                  WHEN status = 'SUBMITTED' THEN 'QUEUE_TTL_EXPIRED'
                  ELSE 'EXEC_TTL_EXPIRED'
                END
-           WHERE (status = 'SUBMITTED' AND (created_at + queue_ttl_sec * 1000) < ?)
+           WHERE (status = 'SUBMITTED' AND (${QUEUE_START_SQL} + queue_ttl_sec * 1000) < ?)
               OR (status = 'CLAIMED'   AND (claimed_at + exec_ttl_sec * 1000) < ?)`
         )
         .run(nowMs, nowMs);
@@ -251,7 +315,7 @@ export class FerryCatEngine {
     const candidatesStmt = this.db.prepare(
       `SELECT * FROM contracts
        WHERE target_agent = ? AND status = 'SUBMITTED'
-       ORDER BY created_at ASC
+       ORDER BY ${QUEUE_START_SQL} ASC, rowid ASC
        LIMIT 10`
     );
 
@@ -359,35 +423,10 @@ export class FerryCatEngine {
     nowMs: number = Date.now()
   ): FulfillContractResult {
     const agentId = this.resolveAgentIdentity(input.agent_id, 'agent_id');
-
-    const row = this.db
-      .prepare(`SELECT * FROM contracts WHERE id = ?`)
-      .get(input.contract_id) as unknown as ContractRow | undefined;
-
-    if (!row) {
-      throw new Error(`Contract "${input.contract_id}" not found.`);
-    }
-
-    if (row.target_agent !== agentId) {
-      throw new Error(
-        `Permission denied: contract "${row.id}" was assigned to "${row.target_agent}", but fulfillment was attempted by "${agentId}".`
-      );
-    }
-
-    if (row.status !== 'CLAIMED') {
-      throw new Error(
-        `Cannot fulfill contract "${input.contract_id}": expected status 'CLAIMED', but current status is '${row.status}'.`
-      );
-    }
+    const row = this.loadClaimedContractForHolder(input.contract_id, agentId, 'fulfill');
 
     // Check execution TTL
-    if (row.claimed_at && nowMs > row.claimed_at + row.exec_ttl_sec * 1000) {
-      this.db
-        .prepare(
-          `UPDATE contracts SET status = 'TIMED_OUT', error_reason = 'EXEC_TTL_EXPIRED' WHERE id = ? AND status = 'CLAIMED'`
-        )
-        .run(row.id);
-
+    if (this.expireIfExecTtlElapsed(row, nowMs)) {
       return {
         ok: false,
         contract_id: row.id,
@@ -431,9 +470,12 @@ export class FerryCatEngine {
         const nextRetryCount = row.retry_count + 1;
 
         if (nextRetryCount <= row.max_retries) {
+          // A rejected submission renews the execution window so the fix attempt is not starved by TTL
           this.db
-            .prepare(`UPDATE contracts SET retry_count = ? WHERE id = ? AND status = 'CLAIMED'`)
-            .run(nextRetryCount, row.id);
+            .prepare(
+              `UPDATE contracts SET retry_count = ?, claimed_at = ? WHERE id = ? AND status = 'CLAIMED'`
+            )
+            .run(nextRetryCount, nowMs, row.id);
 
           return {
             ok: false,
@@ -442,7 +484,7 @@ export class FerryCatEngine {
             retry_count: nextRetryCount,
             max_retries: row.max_retries,
             validation_errors: validation.errors,
-            message: `structured_output failed schema validation (failed attempt ${nextRetryCount}, max_retries=${row.max_retries}). Fix the fields and call fulfill_contract again.`,
+            message: `structured_output failed schema validation (failed attempt ${nextRetryCount}, max_retries=${row.max_retries}). Execution window renewed for ${row.exec_ttl_sec}s. Fix the fields and call fulfill_contract again.`,
           };
         } else {
           const errSummary = `Schema validation failed after ${row.max_retries} retries: ${validation.errors.join('; ')}`;
@@ -508,6 +550,250 @@ export class FerryCatEngine {
   }
 
   /**
+   * Shared holder guard for every CLAIMED-state mutation (fulfill / release / extend / fail):
+   * the contract must exist, belong to the calling agent, and still be CLAIMED.
+   */
+  private loadClaimedContractForHolder(
+    contractId: string,
+    agentId: string,
+    operation: 'fulfill' | 'release' | 'extend' | 'fail'
+  ): ContractRow {
+    const row = this.db
+      .prepare(`SELECT * FROM contracts WHERE id = ?`)
+      .get(contractId) as unknown as ContractRow | undefined;
+
+    if (!row) {
+      throw new Error(`Contract "${contractId}" not found.`);
+    }
+
+    if (row.target_agent !== agentId) {
+      const action = operation === 'fulfill' ? 'fulfillment' : operation;
+      throw new Error(
+        `Permission denied: contract "${row.id}" was assigned to "${row.target_agent}", but ${action} was attempted by "${agentId}".`
+      );
+    }
+
+    if (row.status !== 'CLAIMED') {
+      throw new Error(
+        `Cannot ${operation} contract "${contractId}": expected status 'CLAIMED', but current status is '${row.status}'.`
+      );
+    }
+
+    return row;
+  }
+
+  /**
+   * If the execution window already elapsed, deterministically transition to TIMED_OUT
+   * (the same outcome the lazy sweep would produce) and return true.
+   */
+  private expireIfExecTtlElapsed(
+    row: ContractRow,
+    nowMs: number,
+    errorReason: string = 'EXEC_TTL_EXPIRED'
+  ): boolean {
+    if (row.claimed_at === null || nowMs <= row.claimed_at + row.exec_ttl_sec * 1000) {
+      return false;
+    }
+    this.db
+      .prepare(
+        `UPDATE contracts SET status = 'TIMED_OUT', error_reason = ? WHERE id = ? AND status = 'CLAIMED'`
+      )
+      .run(errorReason, row.id);
+    return true;
+  }
+
+  /**
+   * CLAIMED -> SUBMITTED. Hands a contract back to the queue (tail position) with a fresh
+   * queue window. retry_count and extend_count are reset so the next holder does not inherit
+   * the previous holder's failed attempts and get circuit-broken unfairly.
+   */
+  public releaseContract(
+    input: ReleaseContractInput,
+    nowMs: number = Date.now()
+  ): ReleaseContractResult {
+    const agentId = this.resolveAgentIdentity(input.agent_id, 'agent_id');
+    const row = this.loadClaimedContractForHolder(input.contract_id, agentId, 'release');
+
+    if (this.expireIfExecTtlElapsed(row, nowMs)) {
+      return {
+        ok: false,
+        contract_id: row.id,
+        status: 'TIMED_OUT',
+        release_count: row.release_count,
+        max_releases: MAX_RELEASES,
+        message: `Contract "${row.id}" exceeded execution TTL (${row.exec_ttl_sec}s) before release and was marked TIMED_OUT.`,
+      };
+    }
+
+    if (row.release_count >= MAX_RELEASES) {
+      return {
+        ok: false,
+        contract_id: row.id,
+        status: 'CLAIMED',
+        release_count: row.release_count,
+        max_releases: MAX_RELEASES,
+        message: `Contract "${row.id}" has already been released ${row.release_count} times (max ${MAX_RELEASES}). It stays CLAIMED by "${agentId}"; call fail_contract with a reason if it cannot be completed.`,
+      };
+    }
+
+    const reason = input.reason?.trim();
+    const errorReason = reason ? `RELEASED_BY_HOLDER: ${reason}` : 'RELEASED_BY_HOLDER';
+
+    const res = this.db
+      .prepare(
+        `UPDATE contracts
+         SET status = 'SUBMITTED',
+             claimed_at = NULL,
+             queued_at = ?,
+             retry_count = 0,
+             extend_count = 0,
+             release_count = release_count + 1,
+             error_reason = ?
+         WHERE id = ? AND status = 'CLAIMED' AND target_agent = ? AND release_count = ?`
+      )
+      .run(nowMs, errorReason, row.id, agentId, row.release_count);
+
+    if (Number(res.changes) !== 1) {
+      throw new Error(
+        `Concurrent state change detected: contract "${row.id}" is no longer in 'CLAIMED' state.`
+      );
+    }
+
+    const releaseCount = row.release_count + 1;
+    return {
+      ok: true,
+      contract_id: row.id,
+      status: 'SUBMITTED',
+      release_count: releaseCount,
+      max_releases: MAX_RELEASES,
+      message: `Contract "${row.id}" released by "${agentId}" and re-queued as SUBMITTED (release ${releaseCount}/${MAX_RELEASES}, fresh ${row.queue_ttl_sec}s queue window).`,
+    };
+  }
+
+  /**
+   * Heartbeat / renewal: resets claimed_at to now, i.e. restarts the full exec_ttl_sec window.
+   * Bounded by MAX_TTL_EXTENSIONS per holder and an absolute lifetime cap
+   * (created_at + LIFETIME_QUEUE_TTL_MULTIPLIER * queue_ttl_sec).
+   */
+  public extendTtl(input: ExtendTtlInput, nowMs: number = Date.now()): ExtendTtlResult {
+    const agentId = this.resolveAgentIdentity(input.agent_id, 'agent_id');
+    const row = this.loadClaimedContractForHolder(input.contract_id, agentId, 'extend');
+
+    if (this.expireIfExecTtlElapsed(row, nowMs)) {
+      return {
+        ok: false,
+        contract_id: row.id,
+        status: 'TIMED_OUT',
+        extend_count: row.extend_count,
+        max_extends: MAX_TTL_EXTENSIONS,
+        message: `Contract "${row.id}" exceeded execution TTL (${row.exec_ttl_sec}s) before renewal and was marked TIMED_OUT. Renewal must happen inside the active window.`,
+      };
+    }
+
+    const currentExpiresAt = (row.claimed_at ?? nowMs) + row.exec_ttl_sec * 1000;
+
+    if (row.extend_count >= MAX_TTL_EXTENSIONS) {
+      return {
+        ok: false,
+        contract_id: row.id,
+        status: 'CLAIMED',
+        claimed_at: row.claimed_at ?? undefined,
+        expires_at: currentExpiresAt,
+        extend_count: row.extend_count,
+        max_extends: MAX_TTL_EXTENSIONS,
+        message: `Extension limit reached for contract "${row.id}" (${MAX_TTL_EXTENSIONS}/${MAX_TTL_EXTENSIONS}). Deliver via fulfill_contract, hand it back via release_contract, or call fail_contract before the window closes.`,
+      };
+    }
+
+    const lifetimeDeadline =
+      row.created_at + LIFETIME_QUEUE_TTL_MULTIPLIER * row.queue_ttl_sec * 1000;
+    if (nowMs >= lifetimeDeadline) {
+      return {
+        ok: false,
+        contract_id: row.id,
+        status: 'CLAIMED',
+        claimed_at: row.claimed_at ?? undefined,
+        expires_at: currentExpiresAt,
+        extend_count: row.extend_count,
+        max_extends: MAX_TTL_EXTENSIONS,
+        message: `Contract "${row.id}" reached its absolute lifetime cap (created_at + ${LIFETIME_QUEUE_TTL_MULTIPLIER} x queue_ttl_sec) and can no longer be renewed. The current window still ends at ${new Date(currentExpiresAt).toISOString()}.`,
+      };
+    }
+
+    const res = this.db
+      .prepare(
+        `UPDATE contracts
+         SET claimed_at = ?, extend_count = extend_count + 1
+         WHERE id = ? AND status = 'CLAIMED' AND target_agent = ? AND extend_count = ?`
+      )
+      .run(nowMs, row.id, agentId, row.extend_count);
+
+    if (Number(res.changes) !== 1) {
+      throw new Error(
+        `Concurrent state change detected: contract "${row.id}" was modified while extending its TTL.`
+      );
+    }
+
+    const extendCount = row.extend_count + 1;
+    const expiresAt = nowMs + row.exec_ttl_sec * 1000;
+    return {
+      ok: true,
+      contract_id: row.id,
+      status: 'CLAIMED',
+      claimed_at: nowMs,
+      expires_at: expiresAt,
+      extend_count: extendCount,
+      max_extends: MAX_TTL_EXTENSIONS,
+      message: `Execution window for contract "${row.id}" renewed for ${row.exec_ttl_sec}s (extension ${extendCount}/${MAX_TTL_EXTENSIONS}).`,
+    };
+  }
+
+  /**
+   * CLAIMED -> FAILED (terminal). Lets the holder close the loop explicitly instead of
+   * leaving the requester waiting for the execution TTL to expire.
+   */
+  public failContract(input: FailContractInput, nowMs: number = Date.now()): FailContractResult {
+    const agentId = this.resolveAgentIdentity(input.agent_id, 'agent_id');
+    const reason = (input.reason ?? '').trim();
+    if (!reason) {
+      throw new Error('reason must not be empty when failing a contract.');
+    }
+
+    const row = this.loadClaimedContractForHolder(input.contract_id, agentId, 'fail');
+
+    // A late failure report still loses to the TTL, but the worker's reason is preserved for the requester
+    if (this.expireIfExecTtlElapsed(row, nowMs, `EXEC_TTL_EXPIRED (late failure report: ${reason})`)) {
+      return {
+        ok: false,
+        contract_id: row.id,
+        status: 'TIMED_OUT',
+        message: `Contract "${row.id}" had already exceeded execution TTL (${row.exec_ttl_sec}s); marked TIMED_OUT with the failure reason attached.`,
+      };
+    }
+
+    const res = this.db
+      .prepare(
+        `UPDATE contracts
+         SET status = 'FAILED', error_reason = ?, completed_at = ?
+         WHERE id = ? AND status = 'CLAIMED' AND target_agent = ?`
+      )
+      .run(`WORKER_FAILED: ${reason}`, nowMs, row.id, agentId);
+
+    if (Number(res.changes) !== 1) {
+      throw new Error(
+        `Concurrent state change detected: contract "${row.id}" is no longer in 'CLAIMED' state.`
+      );
+    }
+
+    return {
+      ok: true,
+      contract_id: row.id,
+      status: 'FAILED',
+      message: `Contract "${row.id}" marked FAILED by "${agentId}".`,
+    };
+  }
+
+  /**
    * Strictly read-only inspection: never mutates the SQLite database.
    * Computes `is_logically_expired` dynamically on read.
    */
@@ -543,8 +829,9 @@ export class FerryCatEngine {
     }
 
     const formatted = rows.map((r) => {
+      const queueStart = r.queued_at ?? r.created_at;
       const isLogicallyExpired =
-        (r.status === 'SUBMITTED' && nowMs > r.created_at + r.queue_ttl_sec * 1000) ||
+        (r.status === 'SUBMITTED' && nowMs > queueStart + r.queue_ttl_sec * 1000) ||
         (r.status === 'CLAIMED' &&
           r.claimed_at !== null &&
           nowMs > r.claimed_at + r.exec_ttl_sec * 1000);
@@ -561,6 +848,8 @@ export class FerryCatEngine {
         is_logically_expired: isLogicallyExpired,
         retry_count: r.retry_count,
         max_retries: r.max_retries,
+        extend_count: r.extend_count ?? 0,
+        release_count: r.release_count ?? 0,
         pointers: JSON.parse(r.pointers_json),
         contract_schema: r.contract_schema_json ? JSON.parse(r.contract_schema_json) : null,
         result_summary: r.result_summary,
@@ -571,7 +860,12 @@ export class FerryCatEngine {
         verified_sha256: r.verified_sha256_json ? JSON.parse(r.verified_sha256_json) : null,
         error_reason: r.error_reason,
         created_at: r.created_at,
+        queued_at: queueStart,
         claimed_at: r.claimed_at,
+        exec_expires_at:
+          r.status === 'CLAIMED' && r.claimed_at !== null
+            ? r.claimed_at + r.exec_ttl_sec * 1000
+            : null,
         completed_at: r.completed_at,
       };
     });

@@ -57,7 +57,7 @@ MCP 官方的 `Tasks` 规范（2025-11 / 2026-07）解决的是**单条 `Client 
 
 ## 五大核心架构支柱
 
-### 1. 确定性 6 态状态机 (Deterministic 6-State Machine)
+### 1. 确定性 7 态状态机 (Deterministic 7-State Machine)
 每个状态跃迁均绑定独立的 SQL 事务与乐观锁校验（`changes === 1`），杜绝悬空状态与并发重复领单：
 
 ```
@@ -85,6 +85,14 @@ MCP 官方的 `Tasks` 规范（2025-11 / 2026-07）解决的是**单条 `Client 
                     └───────────┘   └───────────────────┘ └───────────────┘
 ```
 
+持单方对 `CLAIMED` 工单的生命周期控制（均要求 `agent_id === target_agent`）：
+
+| 调用 | 状态流转 | 护栏 |
+| :--- | :--- | :--- |
+| `release_contract` | `CLAIMED → SUBMITTED`（回到队尾，排队窗口重新计时） | 同时清零 `retry_count` / `extend_count`，避免下一位持单者继承前任的失败次数被冤枉熔断；单张工单最多退回 3 次。 |
+| `extend_ttl` | `CLAIMED → CLAIMED`（`claimed_at = now`） | 必须在当前执行窗口内调用；每位持单者最多续期 5 次；`now ≥ created_at + 4 × queue_ttl_sec` 后拒绝续期。 |
+| `fail_contract` | `CLAIMED → FAILED`（终态） | 必须提供 `reason`，落库为 `WORKER_FAILED: <reason>`；若窗口已过期才上报，则置为 `TIMED_OUT` 并保留失败原因。 |
+
 ### 2. 全文件 SHA-256 指纹校验与 TOCTOU 窗口闭合
 - **派单快照**：`dispatch_contract` 读取磁盘文件，记录字节数 `size`、全文件 `sha256`（64 位 hex）以及非空首末行 `first_line` / `last_line`。若文件在最近 3 秒内刚被修改，返回 `warning` 提醒确认 IDE 缓冲区已落盘。
 - **领单核验**：`poll_next_task` 严格按 `存在性 -> 字节数 size -> 全文件 sha256` 顺序核验（绝不以 `mtime` 单独判死刑，避免 IDE 无变更保存导致误杀）。若不一致，等待 `150ms` 重试一次排除瞬态写入，仍不一致则直接置为终态 `POINTER_STALE`。
@@ -92,10 +100,11 @@ MCP 官方的 `Tasks` 规范（2025-11 / 2026-07）解决的是**单条 `Client 
 
 ### 3. 单方向交付与有界 Schema 重试 (`RETRY_NEEDED` $\le 2$)
 - 使用带缓存的 Ajv 校验器验证 `structured_output`，并将校验错误压平为单行路径列表（如 `["/passed: must be boolean"]`）。
-- 前 2 次校验失败返回 `RETRY_NEEDED` 供模型当轮修正；第 3 次失败直接流转至终态 `VALIDATION_FAILED`，防止模型陷入无限重试消耗 Token。
+- 前 2 次校验失败返回 `RETRY_NEEDED` 供模型当轮修正（每次驳回同时重置执行窗口，修正过程不会被 TTL 饿死）；第 3 次失败直接流转至终态 `VALIDATION_FAILED`，防止模型陷入无限重试消耗 Token。
 
 ### 4. 两阶段独立 TTL 与先读后写惰性清理
-- 排队期 `queue_ttl_sec`（默认 1800s）与执行期 `exec_ttl_sec`（默认 300s，从 `claimed_at` 起算）分离，防止排队 29 分钟的任务刚被认领 1 分钟就被误判超时。
+- 排队期 `queue_ttl_sec`（默认 1800s）与执行期 `exec_ttl_sec`（从 `claimed_at` 起算）分离，防止排队 29 分钟的任务刚被认领 1 分钟就被误判超时。
+- `exec_ttl_sec` 按 `task_type` 分级默认：`code_review` / `architecture_audit` → 1800s（深度思考或人在回路），`implementation` / `test_generation` → 300s；派单时显式传入的 `exec_ttl_sec` 优先。
 - `poll_next_task` 先执行无写锁的 `SELECT COUNT(*)` 探测过期项，仅当存在过期工单时才执行 `UPDATE`；`inspect_mesh_state` 保持纯只读，零写锁竞争。
 
 ### 5. 双端纵深路径安全防线
@@ -161,17 +170,20 @@ npm test
   }
 }
 ```
-> **注**：MCP `stdio` 模式与 CLI 直接调用模式（`node --experimental-sqlite dist/cli.js <dispatch|poll|fulfill|inspect>`）共享同一份 `~/.ferrycat/mesh.db` 数据库与同一套 Zod 参数校验契约。
+> **注**：MCP `stdio` 模式与 CLI 直接调用模式（`node --experimental-sqlite dist/cli.js <dispatch|poll|fulfill|release|extend|fail|inspect|worker>`）共享同一份 `~/.ferrycat/mesh.db` 数据库与同一套 Zod 参数校验契约。`worker --exec` 模式下子进程非零退出时，工单会被直接置为 `FAILED`，不再挂在 `CLAIMED` 等超时。
 
 ---
 
-## 暴露的 4 个 MCP 工具契约
+## 暴露的 7 个 MCP 工具契约
 
 | 工具名 | 调用角色 | 职责与事务行为 |
 | :--- | :--- | :--- |
 | **`dispatch_contract`** | 发起方 (Requester) | 校验路径黑名单 $\to$ 计算全文件 SHA-256 与首末行快照 $\to$ 写入 `SUBMITTED`。 |
 | **`poll_next_task`** | 接收方 (Worker) | 先读后写清理超时工单 $\to$ `changes === 1` 原子抢占为 `CLAIMED` $\to$ 校验文件指纹（不匹配则置为 `POINTER_STALE`）。 |
 | **`fulfill_contract`** | 接收方 (Worker) | 二次复核文件指纹（防 TOCTOU）$\to$ 校验 Ajv JSON Schema（失败 $\le 2$ 次返回 `RETRY_NEEDED`，第 3 次置为 `VALIDATION_FAILED`）$\to$ 通过则置为 `COMPLETED`。 |
+| **`release_contract`** | 持单方 (Worker) | 将 `CLAIMED` 工单退回队尾重新置为 `SUBMITTED`，清零 `retry_count`（最多退回 3 次）。 |
+| **`extend_ttl`** | 持单方 (Worker) | 心跳续期：重置执行窗口（`claimed_at = now`），最多 5 次，总生命周期有上限。 |
+| **`fail_contract`** | 持单方 (Worker) | 携带必填 `reason` 将 `CLAIMED` 工单置为终态 `FAILED`。 |
 | **`inspect_mesh_state`** | 任意方 (Read-Only) | 纯只读查询工单状态、结构化产出与错误原因，动态计算 `is_logically_expired`。 |
 
 > 💡 **架构决策记录 (ADR) 与工程验证沉淀**：

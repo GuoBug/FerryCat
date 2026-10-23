@@ -4,9 +4,12 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { FerryCatEngine } from './engine.js';
 import {
   DispatchContractShape,
+  ExtendTtlShape,
+  FailContractShape,
   FulfillContractShape,
   InspectMeshStateShape,
   PollNextTaskShape,
+  ReleaseContractShape,
 } from './schemas.js';
 
 const engine = new FerryCatEngine();
@@ -98,6 +101,47 @@ server.tool(
       };
     }
   }
+);
+
+function toToolResult(run: () => unknown) {
+  try {
+    const result = run();
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      isError: true,
+      content: [
+        { type: 'text' as const, text: JSON.stringify({ ok: false, error: message }, null, 2) },
+      ],
+    };
+  }
+}
+
+// Tool 5: release_contract
+server.tool(
+  'release_contract',
+  'Hand a CLAIMED contract you hold back to the queue (SUBMITTED, tail position, retry_count reset) when it was claimed by mistake or cannot be handled here.',
+  ReleaseContractShape,
+  async (args) => toToolResult(() => engine.releaseContract(args))
+);
+
+// Tool 6: extend_ttl
+server.tool(
+  'extend_ttl',
+  'Heartbeat for long-running work: restart the execution window of a CLAIMED contract you hold (max 5 renewals, bounded total lifetime). Must be called before the current window expires.',
+  ExtendTtlShape,
+  async (args) => toToolResult(() => engine.extendTtl(args))
+);
+
+// Tool 7: fail_contract
+server.tool(
+  'fail_contract',
+  'Explicitly mark a CLAIMED contract you hold as terminal FAILED with a reason, so the requester does not wait for the TTL to expire.',
+  FailContractShape,
+  async (args) => toToolResult(() => engine.failContract(args))
 );
 
 async function main(): Promise<void> {

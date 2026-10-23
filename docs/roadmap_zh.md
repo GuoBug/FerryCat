@@ -16,6 +16,16 @@
 
 ---
 
+## Phase A: 生命周期与执行模型纠偏 (已完成，待发版)
+
+- [x] **FC-A01（分级默认执行期 TTL）**：`code_review` / `architecture_audit` 默认 1800s，`implementation` / `test_generation` 默认 300s；派单显式传入的 `exec_ttl_sec` 优先。
+- [x] **FC-A02（`release_contract` 退回）**：仅持单方可调用，`CLAIMED → SUBMITTED` 回到队尾并重新计算排队窗口；清零 `retry_count` / `extend_count`；单张工单最多退回 3 次。
+- [x] **FC-A03（`extend_ttl` 心跳续期）**：仅持单方可调用，重置 `claimed_at`；每位持单者最多续期 5 次，超过 `created_at + 4 × queue_ttl_sec` 后拒绝续期。`RETRY_NEEDED` 同样会重置执行窗口。
+- [x] **FC-A04（`fail_contract` 与 `FAILED` 终态）**：仅持单方可调用，必须携带失败原因；`worker --exec` 子进程非零退出时自动置为 `FAILED`。
+- [x] **FC-A05（原地表结构迁移）**：增量新增 `queued_at` / `extend_count` / `release_count` 列；旧版宿主写入的行（`queued_at IS NULL`）仍可被正常认领。
+
+---
+
 ## Phase 2: 开发者体验与跨分支补丁支持 (规划中)
 
 - [ ] **FC-201（队头陈旧工单非阻塞跳过）**：当队列首条工单因文件变更被判定为 `POINTER_STALE` 时，支持在记录告警的同时继续扫描同批次后续有效工单，避免队头阻塞一轮轮询。

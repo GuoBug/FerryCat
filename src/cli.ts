@@ -4,9 +4,12 @@ import fs from 'node:fs';
 import { FerryCatEngine } from './engine.js';
 import {
   DispatchContractSchema,
+  ExtendTtlSchema,
+  FailContractSchema,
   FulfillContractSchema,
   InspectMeshStateSchema,
   PollNextTaskSchema,
+  ReleaseContractSchema,
   WorkerCommandSchema,
 } from './schemas.js';
 
@@ -48,6 +51,8 @@ function parseArgs(argv: string[]): { command: string; data: Record<string, unkn
       data.contract_id = requireFlagValue('--id', rest[++i]);
     } else if (token === '--status') {
       data.status = requireFlagValue('--status', rest[++i]);
+    } else if (token === '--reason') {
+      data.reason = requireFlagValue('--reason', rest[++i]);
     } else if (token === '--limit') {
       const rawLimit = requireFlagValue('--limit', rest[++i]);
       const num = Number(rawLimit);
@@ -120,7 +125,13 @@ async function executeTaskAndFulfill(
   engine: FerryCatEngine,
   contract: ContractPayload,
   execCmd: string
-): Promise<{ ok: boolean; status: string; fulfill_result?: unknown; error?: string }> {
+): Promise<{
+  ok: boolean;
+  status: string;
+  fulfill_result?: unknown;
+  error?: string;
+  contract_status?: string;
+}> {
   return new Promise((resolve) => {
     // Only pass lightweight identifiers via env, keeping payload out of Windows 32KB env block
     const childEnv = {
@@ -139,10 +150,23 @@ async function executeTaskAndFulfill(
       { env: childEnv, timeout: timeoutMs, maxBuffer },
       (err, stdout, stderr) => {
         if (err) {
+          const execError = `External exec command failed with code ${err.code ?? 1}${err.killed ? ' (killed after exec timeout)' : ''}: ${stderr || err.message}`;
+          // Close the loop explicitly instead of leaving the contract CLAIMED until the TTL sweep
+          let contractStatus: string | undefined;
+          try {
+            contractStatus = engine.failContract({
+              contract_id: contract.contract_id,
+              agent_id: contract.target_agent,
+              reason: execError.slice(0, 2000),
+            }).status;
+          } catch (failErr) {
+            contractStatus = `UNCHANGED (${failErr instanceof Error ? failErr.message : String(failErr)})`;
+          }
           return resolve({
             ok: false,
             status: 'EXEC_FAILED',
-            error: `External exec command failed with code ${err.code ?? 1}: ${stderr || err.message}`,
+            error: execError,
+            contract_status: contractStatus,
           });
         }
 
@@ -194,10 +218,23 @@ async function executeTaskAndFulfill(
 
           resolve({ ok: fulfillRes.ok, status: fulfillRes.status, fulfill_result: fulfillRes });
         } catch (fulfillErr) {
+          const fulfillError = fulfillErr instanceof Error ? fulfillErr.message : String(fulfillErr);
+          // Best-effort terminal close; fails harmlessly if the contract already left CLAIMED
+          let contractStatus: string | undefined;
+          try {
+            contractStatus = engine.failContract({
+              contract_id: contract.contract_id,
+              agent_id: contract.target_agent,
+              reason: `FULFILL_ERROR: ${fulfillError}`.slice(0, 2000),
+            }).status;
+          } catch {
+            contractStatus = undefined;
+          }
           resolve({
             ok: false,
             status: 'FULFILL_ERROR',
-            error: fulfillErr instanceof Error ? fulfillErr.message : String(fulfillErr),
+            error: fulfillError,
+            contract_status: contractStatus,
           });
         }
       }
@@ -291,6 +328,7 @@ async function runWorkerLoop(
               status: execRes.status,
               ok: execRes.ok,
               error: execRes.error ?? null,
+              contract_status: execRes.contract_status ?? execRes.status,
             })
           );
         }
@@ -371,6 +409,24 @@ async function main(): Promise<void> {
         console.log(JSON.stringify(output, null, 2));
         break;
       }
+      case 'release': {
+        engine = new FerryCatEngine();
+        output = engine.releaseContract(ReleaseContractSchema.parse(data));
+        console.log(JSON.stringify(output, null, 2));
+        break;
+      }
+      case 'extend': {
+        engine = new FerryCatEngine();
+        output = engine.extendTtl(ExtendTtlSchema.parse(data));
+        console.log(JSON.stringify(output, null, 2));
+        break;
+      }
+      case 'fail': {
+        engine = new FerryCatEngine();
+        output = engine.failContract(FailContractSchema.parse(data));
+        console.log(JSON.stringify(output, null, 2));
+        break;
+      }
       case 'worker': {
         const validated = WorkerCommandSchema.parse(data);
         const resolvedAgent = resolveWorkerIdentity(validated.agent_id);
@@ -423,7 +479,7 @@ async function main(): Promise<void> {
       }
       default:
         console.error(
-          'Usage: node --experimental-sqlite dist/cli.js <dispatch|poll|fulfill|inspect|worker> [--agent <id>] [--id <contract_id>] [--file <payload.json>] [--once] [--interval <ms>] [--exec <cmd>]'
+          'Usage: node --experimental-sqlite dist/cli.js <dispatch|poll|fulfill|release|extend|fail|inspect|worker> [--agent <id>] [--id <contract_id>] [--reason <text>] [--file <payload.json>] [--once] [--interval <ms>] [--exec <cmd>]'
         );
         process.exitCode = 1;
         return;

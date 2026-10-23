@@ -16,6 +16,16 @@
 
 ---
 
+## Phase A: Lifecycle & Execution Model Correction (Completed, unreleased)
+
+- [x] **FC-A01 (Tiered default exec TTL)**: `code_review` / `architecture_audit` default to 1800s, `implementation` / `test_generation` to 300s; explicit `exec_ttl_sec` overrides.
+- [x] **FC-A02 (`release_contract`)**: Holder-only `CLAIMED → SUBMITTED` re-queue at the tail with a fresh queue window; resets `retry_count` / `extend_count`; capped at 3 releases.
+- [x] **FC-A03 (`extend_ttl`)**: Holder-only heartbeat resetting `claimed_at`; max 5 renewals per holder, refused after `created_at + 4 × queue_ttl_sec`. `RETRY_NEEDED` also renews the execution window.
+- [x] **FC-A04 (`fail_contract` + `FAILED` terminal state)**: Holder-only explicit failure with mandatory reason; `worker --exec` non-zero exit now closes the contract as `FAILED`.
+- [x] **FC-A05 (In-place schema migration)**: Additive `queued_at` / `extend_count` / `release_count` columns; rows written by older hosts (`queued_at IS NULL`) remain claimable.
+
+---
+
 ## Phase 2: Developer Ergonomics & Multi-Workspace Support (Planned)
 
 - [ ] **FC-201 (`POINTER_STALE` Queue Continuation)**: When the head-of-line contract fails fingerprint verification and transitions to `POINTER_STALE`, optionally continue scanning the remaining candidate contracts in the same `poll_next_task` call while surfacing the stale warning in metadata.

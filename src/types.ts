@@ -4,7 +4,8 @@ export type ContractStatus =
   | 'COMPLETED'
   | 'POINTER_STALE'
   | 'VALIDATION_FAILED'
-  | 'TIMED_OUT';
+  | 'TIMED_OUT'
+  | 'FAILED';
 
 export type TaskType =
   | 'code_review'
@@ -53,8 +54,14 @@ export interface ContractRow {
   verified_sha256_json?: string | null;
   error_reason: string | null;
   created_at: number;
+  /** Start of the current queue window; reset on release. NULL for rows written by pre-0.2 hosts. */
+  queued_at: number | null;
   claimed_at: number | null;
   completed_at: number | null;
+  /** Number of extend_ttl calls by the current holder (reset on release). */
+  extend_count: number;
+  /** Number of times the contract was released back to the queue. */
+  release_count: number;
 }
 
 export interface DispatchContractInput {
@@ -129,6 +136,50 @@ export interface FulfillContractResult {
   retry_count: number;
   max_retries: number;
   validation_errors?: string[];
+  message: string;
+}
+
+export interface ReleaseContractInput {
+  contract_id: string;
+  agent_id?: string;
+  reason?: string;
+}
+
+export interface ReleaseContractResult {
+  ok: boolean;
+  contract_id: string;
+  status: 'SUBMITTED' | 'CLAIMED' | 'TIMED_OUT';
+  release_count: number;
+  max_releases: number;
+  message: string;
+}
+
+export interface ExtendTtlInput {
+  contract_id: string;
+  agent_id?: string;
+}
+
+export interface ExtendTtlResult {
+  ok: boolean;
+  contract_id: string;
+  status: 'CLAIMED' | 'TIMED_OUT';
+  claimed_at?: number;
+  expires_at?: number;
+  extend_count: number;
+  max_extends: number;
+  message: string;
+}
+
+export interface FailContractInput {
+  contract_id: string;
+  agent_id?: string;
+  reason: string;
+}
+
+export interface FailContractResult {
+  ok: boolean;
+  contract_id: string;
+  status: 'FAILED' | 'TIMED_OUT';
   message: string;
 }
 

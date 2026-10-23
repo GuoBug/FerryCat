@@ -56,7 +56,9 @@ export const DispatchContractShape = {
     .positive()
     .max(7200)
     .optional()
-    .describe('Execution expiration TTL in seconds for CLAIMED state (default: 300)'),
+    .describe(
+      'Execution expiration TTL in seconds for CLAIMED state (default by task_type: code_review/architecture_audit=1800, implementation/test_generation=300)'
+    ),
 };
 
 export const PollNextTaskShape = {
@@ -97,6 +99,47 @@ export const FulfillContractShape = {
     .describe('Optional pointers to files created or modified during task execution'),
 };
 
+export const ReleaseContractShape = {
+  contract_id: z.string().min(1).max(128).describe('The CLAIMED contract ID to hand back to the queue'),
+  agent_id: z
+    .string()
+    .min(1)
+    .max(64)
+    .optional()
+    .describe('Current holder agent identifier (defaults to AGENT_NAME env var)'),
+  reason: z
+    .string()
+    .min(1)
+    .max(2000)
+    .optional()
+    .describe('Optional reason for releasing (e.g., wrong context, missing capability)'),
+};
+
+export const ExtendTtlShape = {
+  contract_id: z.string().min(1).max(128).describe('The CLAIMED contract ID whose execution window should be renewed'),
+  agent_id: z
+    .string()
+    .min(1)
+    .max(64)
+    .optional()
+    .describe('Current holder agent identifier (defaults to AGENT_NAME env var)'),
+};
+
+export const FailContractShape = {
+  contract_id: z.string().min(1).max(128).describe('The CLAIMED contract ID to mark as FAILED'),
+  agent_id: z
+    .string()
+    .min(1)
+    .max(64)
+    .optional()
+    .describe('Current holder agent identifier (defaults to AGENT_NAME env var)'),
+  reason: z
+    .string()
+    .min(1)
+    .max(2000)
+    .describe('Why the task cannot be completed; stored in error_reason for the requester'),
+};
+
 export const InspectMeshStateShape = {
   contract_id: z
     .string()
@@ -112,6 +155,7 @@ export const InspectMeshStateShape = {
       'POINTER_STALE',
       'VALIDATION_FAILED',
       'TIMED_OUT',
+      'FAILED',
       'ACTIVE',
       'ALL',
     ])
@@ -129,6 +173,9 @@ export const InspectMeshStateShape = {
 export const DispatchContractSchema = z.object(DispatchContractShape);
 export const PollNextTaskSchema = z.object(PollNextTaskShape);
 export const FulfillContractSchema = z.object(FulfillContractShape);
+export const ReleaseContractSchema = z.object(ReleaseContractShape);
+export const ExtendTtlSchema = z.object(ExtendTtlShape);
+export const FailContractSchema = z.object(FailContractShape);
 export const InspectMeshStateSchema = z.object(InspectMeshStateShape);
 
 export const WorkerCommandShape = {

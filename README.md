@@ -57,7 +57,7 @@ While the official MCP `Tasks` specification (2025-11 / 2026-07) addresses long-
 
 ## Key Architectural Pillars
 
-### 1. Deterministic 6-State Machine
+### 1. Deterministic 7-State Machine
 Every state transition is bound to an explicit SQL transaction with optimistic concurrency control (`changes === 1`), eliminating phantom or dangling states:
 
 ```
@@ -85,6 +85,14 @@ Every state transition is bound to an explicit SQL transaction with optimistic c
                     └───────────┘   └───────────────────┘ └───────────────┘
 ```
 
+Holder-side lifecycle controls on a `CLAIMED` contract (all require `agent_id === target_agent`):
+
+| Call | Transition | Guard rails |
+| :--- | :--- | :--- |
+| `release_contract` | `CLAIMED → SUBMITTED` (tail of queue, fresh queue window) | Resets `retry_count` / `extend_count` so the next holder is not circuit-broken by inherited failures; max 3 releases per contract. |
+| `extend_ttl` | `CLAIMED → CLAIMED` (`claimed_at = now`) | Must be called inside the active window; max 5 renewals per holder; refused once `now ≥ created_at + 4 × queue_ttl_sec`. |
+| `fail_contract` | `CLAIMED → FAILED` (terminal) | Requires a `reason`, stored as `WORKER_FAILED: <reason>`. A report arriving after the window closed becomes `TIMED_OUT` with the reason attached. |
+
 ### 2. Full-File SHA-256 Fingerprinting & TOCTOU Closure
 - **Dispatch Snapshot**: `dispatch_contract` reads target files on disk, recording byte `size`, full-file `sha256` (64 hex chars), `first_line`, and `last_line`. If a file was modified within the last 3 seconds, a `warning` is emitted to alert the requester of potential unsaved IDE buffers.
 - **Claim Verification**: `poll_next_task` verifies `Existence -> Byte Size -> Full-File SHA-256` (never rejecting on `mtime_ms` alone to tolerate no-op IDE saves). On mismatch, it waits `150ms` and retries once to rule out transient IDE flushes before marking the contract `POINTER_STALE`.
@@ -92,10 +100,11 @@ Every state transition is bound to an explicit SQL transaction with optimistic c
 
 ### 3. Bounded Schema Validation (`RETRY_NEEDED` $\le 2$)
 - Outputs are validated against the contract's JSON Schema via cached Ajv validators, with errors flattened into concise single-line paths (e.g., `["/passed: must be boolean"]`).
-- Up to 2 validation failures return `RETRY_NEEDED` while keeping the contract `CLAIMED` for immediate self-correction; a 3rd failure transitions the contract to terminal `VALIDATION_FAILED`.
+- Up to 2 validation failures return `RETRY_NEEDED` while keeping the contract `CLAIMED` for immediate self-correction (each rejection also renews the execution window); a 3rd failure transitions the contract to terminal `VALIDATION_FAILED`.
 
 ### 4. Dual-Stage TTL & Read-Before-Write Sweeping
-- Separates `queue_ttl_sec` (default 1800s for `SUBMITTED`) from `exec_ttl_sec` (default 300s for `CLAIMED`, measured from `claimed_at`), preventing tasks claimed late in the queue window from timing out prematurely during execution.
+- Separates `queue_ttl_sec` (default 1800s for `SUBMITTED`) from `exec_ttl_sec` (measured from `claimed_at`), preventing tasks claimed late in the queue window from timing out prematurely during execution.
+- `exec_ttl_sec` defaults are tiered by `task_type`: `code_review` / `architecture_audit` → 1800s (deep reasoning or human-in-the-loop), `implementation` / `test_generation` → 300s. An explicit `exec_ttl_sec` always wins.
 - `poll_next_task` executes a lock-free `SELECT COUNT(*)` probe before attempting any `UPDATE` on expired rows; `inspect_mesh_state` is strictly read-only.
 
 ### 5. Defense-in-Depth Path Security
@@ -159,7 +168,7 @@ Configure the target host's MCP settings with its respective `AGENT_NAME`:
   }
 }
 ```
-> **Note**: Both MCP Stdio and direct CLI invocation (`node --experimental-sqlite dist/cli.js <dispatch|poll|fulfill|inspect>`) share the same SQLite WAL database at `~/.ferrycat/mesh.db` and the same Zod validation schemas.
+> **Note**: Both MCP Stdio and direct CLI invocation (`node --experimental-sqlite dist/cli.js <dispatch|poll|fulfill|release|extend|fail|inspect|worker>`) share the same SQLite WAL database at `~/.ferrycat/mesh.db` and the same Zod validation schemas. In `worker --exec` mode, a non-zero exit of the child command now closes the contract as `FAILED` instead of leaving it `CLAIMED` until the TTL sweep.
 
 ---
 
@@ -170,6 +179,9 @@ Configure the target host's MCP settings with its respective `AGENT_NAME`:
 | **`dispatch_contract`** | Requester | Enforces path blacklist $\to$ computes full-file SHA-256 & line bounds $\to$ inserts `SUBMITTED`. |
 | **`poll_next_task`** | Worker | Sweeps expired TTLs (read-before-write) $\to$ claims via `changes === 1` (`CLAIMED`) $\to$ verifies disk SHA-256 (or marks `POINTER_STALE`). |
 | **`fulfill_contract`** | Worker | Re-verifies SHA-256 (TOCTOU guard) $\to$ validates Ajv JSON Schema ($\le 2$ retries via `RETRY_NEEDED`, 3rd marks `VALIDATION_FAILED`) $\to$ marks `COMPLETED`. |
+| **`release_contract`** | Worker (holder) | Hands a `CLAIMED` contract back to the queue tail as `SUBMITTED`, resetting `retry_count` (max 3 releases). |
+| **`extend_ttl`** | Worker (holder) | Heartbeat: restarts the execution window (`claimed_at = now`), max 5 renewals and bounded total lifetime. |
+| **`fail_contract`** | Worker (holder) | Marks a `CLAIMED` contract terminal `FAILED` with a mandatory `reason`. |
 | **`inspect_mesh_state`** | Any (Read-Only) | Pure read-only query of contract states, outputs, and dynamic `is_logically_expired` flags. |
 
 > 💡 **Architecture Decision Records & Engineering Verification**:
