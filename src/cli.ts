@@ -65,7 +65,11 @@ function parseArgs(argv: string[]): { command: string; data: Record<string, unkn
       }
       data.interval_ms = num;
     } else if (token === '--exec') {
-      data.exec = requireFlagValue('--exec', rest[++i]);
+      const cmd = requireFlagValue('--exec', rest[++i]).trim();
+      if (!cmd) {
+        throw new Error('Invalid --exec value: command cannot be empty.');
+      }
+      data.exec = cmd;
     } else {
       throw new Error(`Unknown CLI argument: "${token}".`);
     }
@@ -85,15 +89,16 @@ function resolveWorkerIdentity(agentId?: string): string {
 
 function interruptibleSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true }
-    );
+    let timer: NodeJS.Timeout;
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
   });
 }
 
@@ -117,61 +122,92 @@ async function executeTaskAndFulfill(
   execCmd: string
 ): Promise<{ ok: boolean; status: string; fulfill_result?: unknown; error?: string }> {
   return new Promise((resolve) => {
+    // Only pass lightweight identifiers via env, keeping payload out of Windows 32KB env block
     const childEnv = {
       ...process.env,
       FERRYCAT_CONTRACT_ID: contract.contract_id,
       FERRYCAT_TASK_TYPE: contract.task_type,
       FERRYCAT_WORKSPACE_ROOT: contract.workspace_root,
-      FERRYCAT_CONTRACT_JSON: JSON.stringify(contract),
+      FERRYCAT_TARGET_AGENT: contract.target_agent,
     };
 
-    const child = exec(execCmd, { env: childEnv }, (err, stdout, stderr) => {
-      if (err) {
-        return resolve({
-          ok: false,
-          status: 'EXEC_FAILED',
-          error: `External exec command failed with code ${err.code ?? 1}: ${stderr || err.message}`,
-        });
-      }
+    const timeoutMs = Math.max(10000, contract.exec_ttl_sec * 1000);
+    const maxBuffer = 10 * 1024 * 1024; // 10MB to prevent early ENOBUFS kills
 
-      let structuredOutput: Record<string, unknown> | undefined;
-      let resultSummary = stdout.trim();
-
-      try {
-        const parsed = JSON.parse(stdout);
-        if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-          if (parsed.structured_output && typeof parsed.structured_output === 'object') {
-            structuredOutput = parsed.structured_output as Record<string, unknown>;
-          } else {
-            structuredOutput = parsed as Record<string, unknown>;
-          }
-          if (parsed.result_summary && typeof parsed.result_summary === 'string') {
-            resultSummary = parsed.result_summary;
-          }
+    const child = exec(
+      execCmd,
+      { env: childEnv, timeout: timeoutMs, maxBuffer },
+      (err, stdout, stderr) => {
+        if (err) {
+          return resolve({
+            ok: false,
+            status: 'EXEC_FAILED',
+            error: `External exec command failed with code ${err.code ?? 1}: ${stderr || err.message}`,
+          });
         }
-      } catch {
-        // Plain text stdout, fallback to result_summary
-      }
 
-      try {
-        const fulfillRes = engine.fulfillContract({
-          contract_id: contract.contract_id,
-          agent_id: contract.target_agent,
-          result_summary: resultSummary || `Completed via automated worker exec: ${execCmd}`,
-          structured_output: structuredOutput,
-        });
-        resolve({ ok: fulfillRes.ok, status: fulfillRes.status, fulfill_result: fulfillRes });
-      } catch (fulfillErr) {
-        resolve({
-          ok: false,
-          status: 'FULFILL_ERROR',
-          error: fulfillErr instanceof Error ? fulfillErr.message : String(fulfillErr),
-        });
-      }
-    });
+        let structuredOutput: Record<string, unknown> | undefined;
+        let resultSummary = stdout.trim();
 
-    // Provide contract payload through stdin as well
+        try {
+          const parsed = JSON.parse(stdout);
+          if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+            if (parsed.structured_output && typeof parsed.structured_output === 'object') {
+              structuredOutput = parsed.structured_output as Record<string, unknown>;
+            } else {
+              structuredOutput = parsed as Record<string, unknown>;
+            }
+            if (parsed.result_summary && typeof parsed.result_summary === 'string') {
+              resultSummary = parsed.result_summary;
+            }
+          }
+        } catch {
+          // Plain text stdout, fallback to result_summary
+        }
+
+        // Bound result_summary to Zod limit
+        const boundedSummary = (resultSummary || `Completed via automated worker exec: ${execCmd}`).slice(
+          0,
+          20000
+        );
+
+        try {
+          // Strict validation through FulfillContractSchema before passing to engine
+          const validatedFulfillInput = FulfillContractSchema.parse({
+            contract_id: contract.contract_id,
+            agent_id: contract.target_agent,
+            result_summary: boundedSummary,
+            structured_output: structuredOutput,
+          });
+
+          let fulfillRes = engine.fulfillContract(validatedFulfillInput);
+
+          // If RETRY_NEEDED occurs in automated exec, drive to terminal VALIDATION_FAILED
+          // to prevent contract from abandoning and lingering in CLAIMED until TTL expiration
+          if (fulfillRes.status === 'RETRY_NEEDED') {
+            const maxAttempts = (fulfillRes.max_retries ?? 2) + 1;
+            for (let i = (fulfillRes.retry_count ?? 1); i < maxAttempts; i++) {
+              fulfillRes = engine.fulfillContract(validatedFulfillInput);
+              if (fulfillRes.status !== 'RETRY_NEEDED') break;
+            }
+          }
+
+          resolve({ ok: fulfillRes.ok, status: fulfillRes.status, fulfill_result: fulfillRes });
+        } catch (fulfillErr) {
+          resolve({
+            ok: false,
+            status: 'FULFILL_ERROR',
+            error: fulfillErr instanceof Error ? fulfillErr.message : String(fulfillErr),
+          });
+        }
+      }
+    );
+
+    // Provide contract payload through stdin with error trap to prevent unhandled EPIPE
     if (child.stdin) {
+      child.stdin.on('error', () => {
+        // Child process exited without consuming stdin, ignore EPIPE
+      });
       child.stdin.write(JSON.stringify(contract));
       child.stdin.end();
     }
@@ -188,6 +224,7 @@ async function runWorkerLoop(
   const abortController = new AbortController();
   let running = true;
   let sigintCount = 0;
+  let lastNotifiedIds = '';
 
   console.log(
     JSON.stringify({
@@ -205,7 +242,12 @@ async function runWorkerLoop(
   const stopHandler = () => {
     sigintCount++;
     if (sigintCount >= 2) {
-      console.error(JSON.stringify({ status: 'WORKER_FORCE_EXIT', message: 'Second interrupt received, exiting immediately.' }));
+      console.error(
+        JSON.stringify({
+          status: 'WORKER_FORCE_EXIT',
+          message: 'Second interrupt received, exiting immediately.',
+        })
+      );
       process.exit(130);
     }
     running = false;
@@ -253,10 +295,14 @@ async function runWorkerLoop(
           );
         }
       } else {
-        // Mode B: Watcher-only mode (inspect without claiming, preventing abandoned CLAIMED tasks)
-        const state = engine.inspectMeshState({ status: 'SUBMITTED', limit: 10 });
+        // Mode B: Watcher-only mode (inspect up to 100 records without claiming, preventing abandoned tasks)
+        const state = engine.inspectMeshState({ status: 'SUBMITTED', limit: 100 });
         const pendingForAgent = state.contracts.filter((c) => c.target_agent === resolvedAgent);
-        if (pendingForAgent.length > 0) {
+        const currentIds = pendingForAgent.map((c) => c.contract_id).sort().join(',');
+
+        // Deduplicate notifications: only output when pending tasks list actually changes
+        if (pendingForAgent.length > 0 && currentIds !== lastNotifiedIds) {
+          lastNotifiedIds = currentIds;
           console.log(
             JSON.stringify({
               event: 'PENDING_TASKS_DETECTED',
@@ -267,9 +313,12 @@ async function runWorkerLoop(
                 title: c.title,
                 created_at: c.created_at,
               })),
-              message: 'Pending tasks detected. Run with --exec <cmd> for automated processing or claim explicitly via poll_next_task.',
+              message:
+                'Pending tasks detected. Run with --exec <cmd> for automated processing or claim explicitly via poll_next_task.',
             })
           );
+        } else if (pendingForAgent.length === 0) {
+          lastNotifiedIds = '';
         }
       }
     } catch (err) {

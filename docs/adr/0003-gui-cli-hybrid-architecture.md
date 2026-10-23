@@ -41,10 +41,10 @@ We adopt a hybrid layered model: **"GUI layer for high-cognitive human approval;
                       [State Machine: SUBMITTED -> CLAIMED -> COMPLETED / STALE]
    ═════════════════════════════════════════════════════════════════════════════════
                      ▲                                         ▲
-                     │ WAL pulse / 500ms safety poll           │ Optimistic Claim / Double SHA-256
+                     │ 500ms safety poll / task probe          │ Optimistic Claim / Double SHA-256
                      │                                         │
      ┌───────────────┴────────────────┐       ┌────────────────┴───────────────┘
-     │   CLI Worker (Dual-Channel)    │       │   Subprocess Worker (--once)   │
+     │ CLI Worker (Safe Poll & Exec)  │       │   Subprocess Worker (--once)   │
      └────────────────────────────────┘       └────────────────────────────────┘
 ```
 
@@ -54,7 +54,7 @@ We adopt a hybrid layered model: **"GUI layer for high-cognitive human approval;
 | :--- | :--- | :--- |
 | **Typical Hosts** | **Antigravity** (Architecture/Planning) + **WorkBuddy** (Audit/Review) | **`ferrycat-worker`** (Native Node.js process) |
 | **Core Responsibility** | Complex system understanding, architectural trade-offs, merge sign-off | Deterministic pipeline execution, batch test generation, static analysis |
-| **Wake-Up Model** | **Human-Scheduled Instant Poll (Human-as-Scheduler)** | **Dual-Channel REPL (I/O Multiplexing) + Subprocess-per-Task** |
+| **Wake-Up Model** | **Human-Scheduled Instant Poll (Human-as-Scheduler)** | **Safe Watcher Loop + Subprocess-per-Task (`--once`) + `--exec`** |
 | **Security & Sandbox**| Contained within Webview sandboxes; human serves as natural approval gate | Native OS process permissions; high-speed filesystem autonomy |
 
 ### 2.2 Shared Substrate Guarantees (Verified against Engine Source)

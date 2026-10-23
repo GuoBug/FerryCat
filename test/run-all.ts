@@ -559,12 +559,17 @@ async function test7_CliWorkerSubprocess(): Promise<void> {
     assert.ok(res7D.stderr.includes('Worker identity is missing'));
     console.log('  PASS [7D - Identity Enforcement]: Missing agent identity rejected cleanly with non-zero exit.');
 
-    // 7E: Empty queue reports has_task=false
-    const res7E = await execCli(['worker', '--agent', 'cli-worker', '--once']);
-    assert.strictEqual(res7E.code, 0);
-    const data7E = JSON.parse(res7E.stdout);
-    assert.strictEqual(data7E.has_task, false);
-    console.log('  PASS [7E - Empty Queue Idempotency]: No remaining tasks cleanly reported has_task=false.');
+    // 7E: Empty --exec rejected with clean error
+    const res7E = await execCli(['worker', '--agent', 'cli-worker', '--once', '--exec', '']);
+    assert.notStrictEqual(res7E.code, 0, 'Worker must reject empty --exec command');
+    console.log('  PASS [7E - Empty Exec Rejection]: Empty --exec flag rejected cleanly.');
+
+    // 7F: Empty queue reports has_task=false
+    const res7F = await execCli(['worker', '--agent', 'cli-worker', '--once']);
+    assert.strictEqual(res7F.code, 0);
+    const data7F = JSON.parse(res7F.stdout);
+    assert.strictEqual(data7F.has_task, false);
+    console.log('  PASS [7F - Empty Queue Idempotency]: No remaining tasks cleanly reported has_task=false.');
   } finally {
     cleanup();
   }
