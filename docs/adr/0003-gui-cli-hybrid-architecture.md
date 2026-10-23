@@ -66,7 +66,7 @@ We adopt a hybrid layered model: **"GUI layer for high-cognitive human approval;
 6. **Init Lock Timeout Priority**: Placed `PRAGMA busy_timeout = 5000` before `PRAGMA journal_mode = WAL` in `src/engine.ts` L86, eliminating initial concurrent connection lock contention within a 5000ms window.
 
 ### 2.3 CLI Worker Architecture & Grounded Scope
-1. **v0.1.0 Delivered Baseline (Lightweight Worker CLI)**:
+1. **v0.1.1 Delivered Baseline (Lightweight Worker CLI)**:
    - **Subprocess-per-Task Mode (`--once`)**: Claims a task atomically. If `--exec <cmd>` is provided, executes the script and automatically invokes `fulfillContract` with its output; without `--exec`, operates as an explicit Claim-only step;
    - **Safe Watcher Loop**: When running without `--exec`, operates strictly in non-claiming watcher/notifier mode to avoid abandoning claimed tasks;
    - **Graceful Shutdown & Deferred Init**: Supports interruptible sleep and dual-SIGINT hard exit, with deferred database engine instantiation to avoid ghost database creation on argument errors.
@@ -91,5 +91,5 @@ We adopt a hybrid layered model: **"GUI layer for high-cognitive human approval;
 
 * **Read-Only / Artifact Invariant**: CLI workers must remain read-only or write to distinct artifact files. In-place modification of target pointer files triggers TOCTOU content mismatch upon fulfill.
 * **Evolutionary Roadmap**:
-  - **v0.1.0 (Delivered)**: Cross-host desktop review + atomic preemption & TOCTOU closure + in-house CLI Worker (Subprocess claim, safe watcher, and `--exec` automated fulfillment);
+  - **v0.1.1 (Delivered)**: Cross-host desktop review + atomic preemption & TOCTOU closure + in-house CLI Worker (Subprocess claim, safe watcher, and `--exec` automated fulfillment);
   - **v0.2.0 (Planned)**: Dual-channel REPL terminal multiplexing + two-phase write contracts.
