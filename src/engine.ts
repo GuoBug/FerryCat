@@ -603,6 +603,14 @@ export class FerryCatEngine {
   }
 
   /**
+   * Helper to compute the absolute lifetime deadline:
+   * created_at + LIFETIME_QUEUE_TTL_MULTIPLIER * queue_ttl_sec.
+   */
+  private getLifetimeDeadline(row: ContractRow): number {
+    return row.created_at + LIFETIME_QUEUE_TTL_MULTIPLIER * row.queue_ttl_sec * 1000;
+  }
+
+  /**
    * CLAIMED -> SUBMITTED. Hands a contract back to the queue (tail position) with a fresh
    * queue window. retry_count and extend_count are reset so the next holder does not inherit
    * the previous holder's failed attempts and get circuit-broken unfairly.
@@ -622,6 +630,23 @@ export class FerryCatEngine {
         release_count: row.release_count,
         max_releases: MAX_RELEASES,
         message: `Contract "${row.id}" exceeded execution TTL (${row.exec_ttl_sec}s) before release and was marked TIMED_OUT.`,
+      };
+    }
+
+    const lifetimeDeadline = this.getLifetimeDeadline(row);
+    if (nowMs >= lifetimeDeadline) {
+      this.db
+        .prepare(
+          `UPDATE contracts SET status = 'TIMED_OUT', error_reason = 'LIFETIME_DEADLINE_EXPIRED' WHERE id = ? AND status = 'CLAIMED'`
+        )
+        .run(row.id);
+      return {
+        ok: false,
+        contract_id: row.id,
+        status: 'TIMED_OUT',
+        release_count: row.release_count,
+        max_releases: MAX_RELEASES,
+        message: `Contract "${row.id}" reached its absolute lifetime cap (${LIFETIME_QUEUE_TTL_MULTIPLIER} x queue_ttl_sec) and cannot be released; marked TIMED_OUT.`,
       };
     }
 
@@ -645,7 +670,6 @@ export class FerryCatEngine {
          SET status = 'SUBMITTED',
              claimed_at = NULL,
              queued_at = ?,
-             retry_count = 0,
              extend_count = 0,
              release_count = release_count + 1,
              error_reason = ?
@@ -705,8 +729,7 @@ export class FerryCatEngine {
       };
     }
 
-    const lifetimeDeadline =
-      row.created_at + LIFETIME_QUEUE_TTL_MULTIPLIER * row.queue_ttl_sec * 1000;
+    const lifetimeDeadline = this.getLifetimeDeadline(row);
     if (nowMs >= lifetimeDeadline) {
       return {
         ok: false,
@@ -717,6 +740,20 @@ export class FerryCatEngine {
         extend_count: row.extend_count,
         max_extends: MAX_TTL_EXTENSIONS,
         message: `Contract "${row.id}" reached its absolute lifetime cap (created_at + ${LIFETIME_QUEUE_TTL_MULTIPLIER} x queue_ttl_sec) and can no longer be renewed. The current window still ends at ${new Date(currentExpiresAt).toISOString()}.`,
+      };
+    }
+
+    const proposedExpiresAt = nowMs + row.exec_ttl_sec * 1000;
+    if (proposedExpiresAt > lifetimeDeadline) {
+      return {
+        ok: false,
+        contract_id: row.id,
+        status: 'CLAIMED',
+        claimed_at: row.claimed_at ?? undefined,
+        expires_at: currentExpiresAt,
+        extend_count: row.extend_count,
+        max_extends: MAX_TTL_EXTENSIONS,
+        message: `Contract "${row.id}" renewal would push execution window to ${new Date(proposedExpiresAt).toISOString()}, exceeding the absolute lifetime cap (${new Date(lifetimeDeadline).toISOString()}). The current window still ends at ${new Date(currentExpiresAt).toISOString()}.`,
       };
     }
 

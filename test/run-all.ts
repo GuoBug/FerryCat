@@ -827,7 +827,7 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
     assert.strictEqual(engine.pollNextTask({ agent_id: 'ttl-override' }, t0 + S).contract?.exec_ttl_sec, 42);
     console.log('  PASS [9A - Tiered TTL]: review/audit=1800s, implementation/test=300s, explicit exec_ttl_sec overrides.');
 
-    // 9B: release_contract resets retry_count, re-queues at tail, enforces holder + release cap
+    // 9B: release_contract preserves contract-level retry_count, re-queues at tail, enforces holder + release cap
     const schema = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' } } };
     const relA = engine.dispatchContract({ ...base, target_agent: 'rel', title: 'A', contract_schema: schema }, t0);
     const relB = engine.dispatchContract({ ...base, target_agent: 'rel', title: 'B' }, t0 + 1);
@@ -851,7 +851,7 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
     assert.strictEqual(released.release_count, 1);
     const afterRelease = engine.inspectMeshState({ contract_id: relA.contract_id }, t0 + 3 * S).contracts[0];
     assert.strictEqual(afterRelease.status, 'SUBMITTED');
-    assert.strictEqual(afterRelease.retry_count, 0, 'retry_count must be reset on release');
+    assert.strictEqual(afterRelease.retry_count, 1, 'retry_count must be preserved across release to protect circuit breaker quota');
     assert.strictEqual(afterRelease.claimed_at, null);
     assert.strictEqual(afterRelease.error_reason, 'RELEASED_BY_HOLDER: missing local toolchain');
     assert.throws(
@@ -863,13 +863,13 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
     assert.strictEqual(engine.pollNextTask({ agent_id: 'rel' }, t0 + 5 * S).contract?.contract_id, relB.contract_id);
     assert.strictEqual(engine.pollNextTask({ agent_id: 'rel' }, t0 + 6 * S).contract?.contract_id, relA.contract_id);
 
-    // New holder gets the full retry budget again (would be circuit-broken at 2 inherited failures otherwise)
+    // New holder continues from retry_count = 1; another failed attempt pushes it to 2 (circuit breaker quota preserved)
     const retryAfterRelease = engine.fulfillContract(
       { contract_id: relA.contract_id, agent_id: 'rel', result_summary: 'bad', structured_output: { ok: 'no' } },
       t0 + 7 * S
     );
     assert.strictEqual(retryAfterRelease.status, 'RETRY_NEEDED');
-    assert.strictEqual(retryAfterRelease.retry_count, 1);
+    assert.strictEqual(retryAfterRelease.retry_count, 2);
 
     // Release cap: releases 2 and 3 succeed, 4th is refused and the contract stays CLAIMED
     let tRel = t0 + 10 * S;
@@ -882,7 +882,7 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
     assert.strictEqual(capped.ok, false);
     assert.strictEqual(capped.status, 'CLAIMED');
     assert.match(capped.message, /fail_contract/);
-    console.log('  PASS [9B - release_contract]: holder-only, retry_count reset, tail re-queue, capped at 3 releases.');
+    console.log('  PASS [9B - release_contract]: holder-only, retry_count preserved, tail re-queue, capped at 3 releases.');
 
     // Fresh queue window on release: original queue TTL (60s) passed, contract must not be swept
     const relC = engine.dispatchContract({ ...base, target_agent: 'rel-window', queue_ttl_sec: 60 }, t0);
@@ -891,6 +891,16 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
     const reclaimed = engine.pollNextTask({ agent_id: 'rel-window' }, t0 + 100 * S);
     assert.strictEqual(reclaimed.contract?.contract_id, relC.contract_id, 'released contract needs a fresh queue window');
     console.log('  PASS [9B - Fresh Queue Window]: contract released after its original queue TTL was re-claimable.');
+
+    // 9B-2: release rejected once beyond absolute lifetime cap
+    const relCap = engine.dispatchContract({ ...base, target_agent: 'rel-cap', queue_ttl_sec: 60 }, t0);
+    engine.pollNextTask({ agent_id: 'rel-cap' }, t0 + 10 * S);
+    // Lifetime cap is created_at + 4 * 60s = 240s
+    const relBeyondCap = engine.releaseContract({ contract_id: relCap.contract_id, agent_id: 'rel-cap' }, t0 + 241 * S);
+    assert.strictEqual(relBeyondCap.ok, false);
+    assert.strictEqual(relBeyondCap.status, 'TIMED_OUT');
+    assert.strictEqual(engine.inspectMeshState({ contract_id: relCap.contract_id }).contracts[0].status, 'TIMED_OUT');
+    console.log('  PASS [9B - Lifetime Release Cap]: release refused when nowMs >= lifetime deadline.');
 
     // 9C: extend_ttl restarts the window, capped at 5, must be called inside the window
     const ext = engine.dispatchContract({ ...base, target_agent: 'ext', exec_ttl_sec: 300 }, t0);
@@ -919,13 +929,23 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
     assert.strictEqual(engine.inspectMeshState({ contract_id: ext.contract_id }).contracts[0].status, 'TIMED_OUT');
 
     // Absolute lifetime cap: created_at + 4 * queue_ttl_sec
+    // For queue_ttl_sec = 60, exec_ttl_sec = 300: lifetime deadline is t0 + 240s.
+    // At t0 + 10s: claimed. At t0 + 20s: renewing would produce expires_at = 20s + 300s = 320s > 240s, so it must be refused!
     const capC = engine.dispatchContract({ ...base, target_agent: 'ext-cap', queue_ttl_sec: 60, exec_ttl_sec: 300 }, t0);
     engine.pollNextTask({ agent_id: 'ext-cap' }, t0 + 10 * S);
-    assert.strictEqual(engine.extendTtl({ contract_id: capC.contract_id, agent_id: 'ext-cap' }, t0 + 200 * S).ok, true);
-    const lifetimeCapped = engine.extendTtl({ contract_id: capC.contract_id, agent_id: 'ext-cap' }, t0 + 250 * S);
-    assert.strictEqual(lifetimeCapped.ok, false);
-    assert.match(lifetimeCapped.message, /absolute lifetime cap/);
-    console.log('  PASS [9C - extend_ttl]: window restarted 5x, 6th refused, expired window -> TIMED_OUT, lifetime cap enforced.');
+    const proposedExceedsCap = engine.extendTtl({ contract_id: capC.contract_id, agent_id: 'ext-cap' }, t0 + 20 * S);
+    assert.strictEqual(proposedExceedsCap.ok, false, 'renewal that would push window past lifetime deadline must be refused');
+    assert.match(proposedExceedsCap.message, /exceeding the absolute lifetime cap/);
+
+    // Now test with larger queue_ttl_sec = 600, exec_ttl_sec = 100: deadline is t0 + 2400s.
+    // At t0 + 50s: renewing pushes to 50s + 100s = 150s <= 2400s, so it succeeds.
+    const capOk = engine.dispatchContract({ ...base, target_agent: 'ext-ok', queue_ttl_sec: 600, exec_ttl_sec: 100 }, t0);
+    engine.pollNextTask({ agent_id: 'ext-ok' }, t0 + 10 * S);
+    const extendWithinLifetime = engine.extendTtl({ contract_id: capOk.contract_id, agent_id: 'ext-ok' }, t0 + 50 * S);
+    assert.strictEqual(extendWithinLifetime.ok, true);
+    assert.ok(extendWithinLifetime.expires_at! <= t0 + 2400 * S, 'expires_at must be strictly within lifetime cap');
+
+    console.log('  PASS [9C - extend_ttl]: window restarted 5x, 6th refused, proposed window past deadline refused, lifetime cap enforced.');
 
     // 9D: fail_contract -> terminal FAILED with reason; late report -> TIMED_OUT with reason preserved
     const fl = engine.dispatchContract({ ...base, target_agent: 'fl', exec_ttl_sec: 300 }, t0);
