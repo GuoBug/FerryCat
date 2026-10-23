@@ -190,6 +190,7 @@ npm test
 > - [ADR-0001: 采用跨宿主 SQLite WAL 总线与人工调度即时轮询模型](docs/adr/0001-cross-host-sqlite-wal-and-poll-model_zh.md)（为什么采用 `node:sqlite` WAL + `poll_next_task`，而非 60s 长轮询挂起或单连接 MCP Tasks）
 > - [ADR-0002: 全文件 SHA-256 指纹防盲审、TOCTOU 闭合与跨宿主多模型实测记录](docs/adr/0002-fingerprint-toctou-and-cross-model-audit_zh.md)（指针陈旧防护设计与 3 模型真实互审复盘记录）
 > - [ADR-0003: GUI 沙箱与 CLI 进程混合分层架构、唤醒边界与双通道 Worker 选型](docs/adr/0003-gui-cli-hybrid-architecture_zh.md)（桌面人在回路审批闸 vs 自研 CLI 双通道自治）
+> - [ADR-0004: 审议分离协议、TOCTOU 软失败缓冲与审查期不可变基线规范](docs/adr/0004-review-mutation-separation-and-toctou-buffer_zh.md)（如何彻底规避审查者“边审边修”或并发写入引发的工单报废）
 > - [FerryCat 演进路线图 (Roadmap)](docs/roadmap_zh.md)
 
 ---

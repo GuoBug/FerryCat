@@ -188,6 +188,7 @@ Configure the target host's MCP settings with its respective `AGENT_NAME`:
 > - [ADR-0001: Cross-Host SQLite WAL Bus & Human-Scheduled Poll Model](docs/adr/0001-cross-host-sqlite-wal-and-poll-model.md) (Why `node:sqlite` WAL + `poll_next_task` instead of 60s Blocking Hold or single-connection MCP Tasks)
 > - [ADR-0002: Full-File SHA-256 Fingerprinting, TOCTOU Guard & Cross-Model Audit](docs/adr/0002-fingerprint-toctou-and-cross-model-audit.md) (Stale-context prevention and real-world cross-host verification records)
 > - [ADR-0003: GUI Sandbox vs CLI Process Hybrid Layering Architecture & Wake-Up Boundaries](docs/adr/0003-gui-cli-hybrid-architecture.md) (Desktop HITL approval vs in-house CLI dual-channel autonomy)
+> - [ADR-0004: Separation of Review and Mutation (SRM), TOCTOU Soft-Failure Buffering & Immutable Baseline Protocol](docs/adr/0004-review-mutation-separation-and-toctou-buffer.md) (How to prevent review abortion from concurrent or well-intended reviewer edits)
 > - [FerryCat Requirements Backlog & Roadmap](docs/roadmap.md)
 
 ---
