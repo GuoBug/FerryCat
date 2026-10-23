@@ -83,9 +83,9 @@ export class FerryCatEngine {
 
   private initSchema(): void {
     this.db.exec(`
+      PRAGMA busy_timeout = 5000;
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = NORMAL;
-      PRAGMA busy_timeout = 5000;
 
       CREATE TABLE IF NOT EXISTS contracts (
         id TEXT PRIMARY KEY,

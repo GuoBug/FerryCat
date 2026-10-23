@@ -5,7 +5,8 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "ferrycat": "dist/index.js"
+    "ferrycat": "dist/index.js",
+    "ferrycat-cli": "dist/cli.js"
   },
   "scripts": {
     "build": "tsc",

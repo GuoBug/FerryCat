@@ -130,3 +130,31 @@ export const DispatchContractSchema = z.object(DispatchContractShape);
 export const PollNextTaskSchema = z.object(PollNextTaskShape);
 export const FulfillContractSchema = z.object(FulfillContractShape);
 export const InspectMeshStateSchema = z.object(InspectMeshStateShape);
+
+export const WorkerCommandShape = {
+  agent_id: z
+    .string()
+    .min(1)
+    .max(64)
+    .optional()
+    .describe('Worker agent identifier (defaults to AGENT_NAME env var)'),
+  once: z
+    .boolean()
+    .optional()
+    .describe('Run single poll attempt and exit immediately (Subprocess-per-Task mode)'),
+  interval_ms: z
+    .number()
+    .int()
+    .min(100)
+    .max(60000)
+    .optional()
+    .describe('Polling interval in milliseconds for persistent worker loop (default: 1000)'),
+  exec: z
+    .string()
+    .min(1)
+    .max(1024)
+    .optional()
+    .describe('Optional command or script to execute upon task claim; stdout will be used to fulfill contract automatically'),
+};
+
+export const WorkerCommandSchema = z.object(WorkerCommandShape).strict();

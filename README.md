@@ -8,6 +8,7 @@
 [![Node.js Version](https://img.shields.io/badge/Node.js-22.5%2B-339933?style=flat&logo=nodedotjs)](https://nodejs.org/)
 [![Native Addons](https://img.shields.io/badge/Native_Addons-0_(node%3Asqlite)-success?style=flat)]()
 [![Protocol](https://img.shields.io/badge/Protocol-MCP_Stdio-orange?style=flat)](https://modelcontextprotocol.io/)
+[![Glama](https://glama.ai/mcp/servers/GuoBug/FerryCat/badge)](https://glama.ai/mcp/servers/GuoBug/FerryCat)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 > **FerryCat** (`ferrycat`) is a lightweight, deterministic cross-host AI agent handoff and code review bus built on the Model Context Protocol (MCP) and Node.js built-in `node:sqlite` (WAL mode).  
@@ -174,6 +175,7 @@ Configure the target host's MCP settings with its respective `AGENT_NAME`:
 > 💡 **Architecture Decision Records & Engineering Verification**:
 > - [ADR-0001: Cross-Host SQLite WAL Bus & Human-Scheduled Poll Model](docs/adr/0001-cross-host-sqlite-wal-and-poll-model.md) (Why `node:sqlite` WAL + `poll_next_task` instead of 60s Blocking Hold or single-connection MCP Tasks)
 > - [ADR-0002: Full-File SHA-256 Fingerprinting, TOCTOU Guard & Cross-Model Audit](docs/adr/0002-fingerprint-toctou-and-cross-model-audit.md) (Stale-context prevention and real-world cross-host verification records)
+> - [ADR-0003: GUI Sandbox vs CLI Process Hybrid Layering Architecture & Wake-Up Boundaries](docs/adr/0003-gui-cli-hybrid-architecture.md) (Desktop HITL approval vs in-house CLI dual-channel autonomy)
 > - [FerryCat Requirements Backlog & Roadmap](docs/roadmap.md)
 
 ---

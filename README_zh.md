@@ -8,6 +8,7 @@
 [![Node.js Version](https://img.shields.io/badge/Node.js-22.5%2B-339933?style=flat&logo=nodedotjs)](https://nodejs.org/)
 [![Native Addons](https://img.shields.io/badge/Native_Addons-0_(node%3Asqlite)-success?style=flat)]()
 [![Protocol](https://img.shields.io/badge/Protocol-MCP_Stdio-orange?style=flat)](https://modelcontextprotocol.io/)
+[![Glama](https://glama.ai/mcp/servers/GuoBug/FerryCat/badge)](https://glama.ai/mcp/servers/GuoBug/FerryCat)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 > **FerryCat** (`ferrycat`) 是一个基于 Model Context Protocol (MCP) 与 Node.js 内置 `node:sqlite`（WAL 并发模式）构建的轻量级、确定性跨宿主 AI Agent 工单交接与交叉评审总线。  
@@ -176,6 +177,7 @@ npm test
 > 💡 **架构决策记录 (ADR) 与工程验证沉淀**：
 > - [ADR-0001: 采用跨宿主 SQLite WAL 总线与人工调度即时轮询模型](docs/adr/0001-cross-host-sqlite-wal-and-poll-model_zh.md)（为什么采用 `node:sqlite` WAL + `poll_next_task`，而非 60s 长轮询挂起或单连接 MCP Tasks）
 > - [ADR-0002: 全文件 SHA-256 指纹防盲审、TOCTOU 闭合与跨宿主多模型实测记录](docs/adr/0002-fingerprint-toctou-and-cross-model-audit_zh.md)（指针陈旧防护设计与 3 模型真实互审复盘记录）
+> - [ADR-0003: GUI 沙箱与 CLI 进程混合分层架构、唤醒边界与双通道 Worker 选型](docs/adr/0003-gui-cli-hybrid-architecture_zh.md)（桌面人在回路审批闸 vs 自研 CLI 双通道自治）
 > - [FerryCat 演进路线图 (Roadmap)](docs/roadmap_zh.md)
 
 ---

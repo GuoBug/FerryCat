@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -472,6 +472,104 @@ async function test6_McpStdioHandshakeAndToolDiscovery(): Promise<void> {
   }
 }
 
+async function test7_CliWorkerSubprocess(): Promise<void> {
+  console.log('\n[Test 7] CLI Worker Subprocess Execution (--once, --exec & flag precedence)');
+  const { dir, dbPath, cleanup } = createTempWorkspace('cli_worker');
+
+  try {
+    const targetFile = path.join(dir, 'task.ts');
+    fs.writeFileSync(targetFile, 'export const value = 42;\n', 'utf8');
+
+    // Dispatch 2 contracts to test both claim-only and auto-exec
+    const engine = new FerryCatEngine({ dbPath });
+    const contract1 = engine.dispatchContract({
+      requester_agent: 'gui-host',
+      target_agent: 'cli-worker',
+      task_type: 'code_review',
+      title: 'Audit task.ts #1',
+      context_summary: 'Verify export value',
+      workspace_root: dir,
+      pointers: [{ path: 'task.ts' }],
+    });
+    const contract2 = engine.dispatchContract({
+      requester_agent: 'gui-host',
+      target_agent: 'cli-worker',
+      task_type: 'test_generation',
+      title: 'Generate tests #2',
+      context_summary: 'Generate tests for task.ts',
+      workspace_root: dir,
+      pointers: [{ path: 'task.ts' }],
+    });
+    engine.close();
+
+    // Verify directly against built dist/cli.js
+    const cliPath = path.resolve('dist/cli.js');
+    const execCli = (args: string[], customEnv: Record<string, string> = {}): Promise<{ code: number; stdout: string; stderr: string }> => {
+      return new Promise((resolve) => {
+        execFile(
+          process.execPath,
+          ['--experimental-sqlite', cliPath, ...args],
+          { env: { ...process.env, FERRYCAT_DB_PATH: dbPath, ...customEnv } },
+          (err, stdout, stderr) => {
+            resolve({ code: err ? (err.code as number ?? 1) : 0, stdout, stderr });
+          }
+        );
+      });
+    };
+
+    // 7A: Claim-only mode (without --exec)
+    const res7A = await execCli(['worker', '--agent', 'cli-worker', '--once']);
+    assert.strictEqual(res7A.code, 0, `7A exit code must be 0: ${res7A.stderr}`);
+    const data7A = JSON.parse(res7A.stdout);
+    assert.strictEqual(data7A.has_task, true);
+    assert.strictEqual(data7A.mode, 'CLAIM_ONLY');
+    assert.strictEqual(data7A.status, 'CLAIMED');
+    assert.strictEqual(data7A.contract.contract_id, contract1.contract_id);
+    console.log(`  PASS [7A - Subprocess Claim-only]: Worker claimed "${data7A.contract.contract_id}" in CLAIM_ONLY mode.`);
+
+    // 7B: Auto-exec and fulfill mode (--once --exec)
+    const execScript = `node -e "console.log(JSON.stringify({ passed: true, summary: 'All tests generated' }))"`;
+    const res7B = await execCli(['worker', '--agent', 'cli-worker', '--once', '--exec', execScript]);
+    assert.strictEqual(res7B.code, 0, `7B exit code must be 0: ${res7B.stderr}`);
+    const data7B = JSON.parse(res7B.stdout);
+    assert.strictEqual(data7B.has_task, true);
+    assert.strictEqual(data7B.contract_id, contract2.contract_id);
+    assert.strictEqual(data7B.execution.ok, true);
+    assert.strictEqual(data7B.execution.status, 'COMPLETED');
+
+    // Confirm state in db is truly COMPLETED
+    const verifyEngine = new FerryCatEngine({ dbPath });
+    const inspected2 = verifyEngine.inspectMeshState({ contract_id: contract2.contract_id });
+    assert.strictEqual(inspected2.contracts[0].status, 'COMPLETED');
+    verifyEngine.close();
+    console.log(`  PASS [7B - Subprocess Auto-Exec & Fulfill]: Contract "${contract2.contract_id}" executed and completed automatically.`);
+
+    // 7C: Explicit CLI flag overrides --file default
+    const tempPayloadFile = path.join(dir, 'default-payload.json');
+    fs.writeFileSync(tempPayloadFile, JSON.stringify({ agent_id: 'wrong-agent', once: true }), 'utf8');
+    const res7C = await execCli(['worker', '--file', tempPayloadFile, '--agent', 'cli-worker']);
+    assert.strictEqual(res7C.code, 0);
+    const data7C = JSON.parse(res7C.stdout);
+    assert.strictEqual(data7C.agent_id, 'cli-worker', 'CLI --agent flag must override --file agent_id');
+    console.log('  PASS [7C - Flag Precedence]: Explicit CLI --agent flag cleanly overrode --file contents.');
+
+    // 7D: Missing identity fails with clear non-zero exit
+    const res7D = await execCli(['worker', '--once'], { AGENT_NAME: '' });
+    assert.notStrictEqual(res7D.code, 0, 'Worker must exit non-zero when agent identity is missing');
+    assert.ok(res7D.stderr.includes('Worker identity is missing'));
+    console.log('  PASS [7D - Identity Enforcement]: Missing agent identity rejected cleanly with non-zero exit.');
+
+    // 7E: Empty queue reports has_task=false
+    const res7E = await execCli(['worker', '--agent', 'cli-worker', '--once']);
+    assert.strictEqual(res7E.code, 0);
+    const data7E = JSON.parse(res7E.stdout);
+    assert.strictEqual(data7E.has_task, false);
+    console.log('  PASS [7E - Empty Queue Idempotency]: No remaining tasks cleanly reported has_task=false.');
+  } finally {
+    cleanup();
+  }
+}
+
 async function main(): Promise<void> {
   console.log('==============================================================');
   console.log(' FerryCat Offline Verification Suite (Node ' + process.version + ')');
@@ -483,9 +581,10 @@ async function main(): Promise<void> {
   await test4_SecurityPathBlacklist();
   await test5_DualStageTtlAndHappyPath();
   await test6_McpStdioHandshakeAndToolDiscovery();
+  await test7_CliWorkerSubprocess();
 
   console.log('\n==============================================================');
-  console.log(' ALL 6 TEST SUITES PASSED GREEN');
+  console.log(' ALL 7 TEST SUITES PASSED GREEN');
   console.log('==============================================================');
 }
 
