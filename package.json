@@ -21,6 +21,7 @@
   "scripts": {
     "build": "tsc",
     "prepack": "npm run build",
+    "bump": "node scripts/bump-version.js",
     "start": "node --experimental-sqlite dist/index.js",
     "test": "node --experimental-sqlite --import tsx test/run-all.ts"
   },

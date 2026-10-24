@@ -1,4 +1,4 @@
-name: Release
+name: Release & Publish
 
 on:
   push:
@@ -7,10 +7,11 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   release:
-    name: Publish GitHub Release
+    name: Build, Verify & Publish
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -20,13 +21,35 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          registry-url: 'https://registry.npmjs.org'
 
-      - name: Install dependencies & Build
-        run: |
-          npm ci
-          npm run build
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build dist
+        run: npm run build
+
+      - name: Run verification test suite
+        run: npm test
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+
+      - name: Publish to npm
+        if: env.NODE_AUTH_TOKEN != ''
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+          chmod +x mcp-publisher
+
+      - name: Authenticate to MCP Registry (via GitHub OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish to Official MCP Registry
+        run: ./mcp-publisher publish
