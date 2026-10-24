@@ -9,7 +9,7 @@ import {
   verifyFingerprintsWithRetry,
 } from './fingerprint.js';
 import { validateContractOutput } from './schema-validator.js';
-import { validateJsonPayload } from './schemas.js';
+import { MAX_JSON_PAYLOAD_BYTES, validateJsonPayload } from './schemas.js';
 import type {
   ContractRow,
   DispatchContractInput,
@@ -906,6 +906,64 @@ export class FerryCatEngine {
       max_extends: MAX_TTL_EXTENSIONS,
       message: `Execution window for contract "${row.id}" renewed for ${row.exec_ttl_sec}s (extension ${extendCount}/${MAX_TTL_EXTENSIONS}).`,
     };
+  }
+
+  /**
+   * Read-only lease snapshot used by the execution supervisor (Phase 3 Step 0, CK-03) to
+   * re-read row state after an optimistic-lock conflict instead of crashing the worker.
+   * Never mutates state.
+   */
+  public getLeaseSnapshot(contractId: string): {
+    status: string;
+    claim_token: string | null;
+    claimed_at: number | null;
+    exec_ttl_sec: number;
+    extend_count: number;
+  } | null {
+    const row = this.db
+      .prepare(
+        `SELECT status, claim_token, claimed_at, exec_ttl_sec, extend_count FROM contracts WHERE id = ?`
+      )
+      .get(contractId) as
+      | {
+          status: string;
+          claim_token: string | null;
+          claimed_at: number | null;
+          exec_ttl_sec: number;
+          extend_count: number;
+        }
+      | undefined;
+    return row ?? null;
+  }
+
+  /**
+   * Persist partial worker output into salvaged_result_json WITHOUT any status transition
+   * (Phase 3 Step 0, CK-07 / CK-09). Allowed for the lease holder while CLAIMED, and also
+   * right after the window closed (TIMED_OUT) so produced output is never silently dropped.
+   * Returns false when the caller no longer owns the lease (no write happens).
+   */
+  public recordSalvage(input: {
+    contract_id: string;
+    agent_id?: string;
+    claim_token?: string;
+    salvage: Record<string, unknown>;
+  }): boolean {
+    const agentId = this.resolveAgentIdentity(input.agent_id, 'agent_id');
+    const payload = JSON.stringify(input.salvage);
+    if (Buffer.byteLength(payload, 'utf8') > MAX_JSON_PAYLOAD_BYTES) {
+      throw new Error('salvage payload exceeds 1MB limit (FC-302).');
+    }
+    const res = this.db
+      .prepare(
+        `UPDATE contracts
+         SET salvaged_result_json = ?
+         WHERE id = ?
+           AND target_agent = ?
+           AND status IN ('CLAIMED', 'TIMED_OUT')
+           AND (claim_token IS NULL OR claim_token = ?)`
+      )
+      .run(payload, input.contract_id, agentId, input.claim_token ?? '');
+    return Number(res.changes) === 1;
   }
 
   /**

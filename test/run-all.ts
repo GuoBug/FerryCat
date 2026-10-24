@@ -6,6 +6,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FerryCatEngine } from '../src/engine.js';
+import {
+  executeTaskAndFulfill,
+  createSupervisedChild,
+  terminateActiveChildrenSync,
+  terminateProcessTree,
+  buildChildEnv,
+  isSecretEnvName,
+  type ContractPayload,
+} from '../src/supervisor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1709,6 +1718,362 @@ async function test12_Phase031_LeaseTokensAndPayloadLimits(): Promise<void> {
   }
 }
 
+async function test13_Step0SupervisorHardening(): Promise<void> {
+  console.log('\n[Test 13] Phase 3 Step 0: Execution Supervisor & Auto-Heartbeat Hardening');
+  const { dir, dbPath, cleanup } = createTempWorkspace('step0-supervisor');
+
+  try {
+    const fileA = path.join(dir, 'code.ts');
+    fs.writeFileSync(fileA, 'export const value = 42;\n');
+
+    // -------------------------------------------------------------------------
+    // 13A: CK-06: Minimal environment allowlist & secret stripping (cross-platform)
+    // -------------------------------------------------------------------------
+    const testHostEnv: NodeJS.ProcessEnv = {
+      PATH: 'C:\\Windows\\System32;C:\\Program Files\\nodejs',
+      USERPROFILE: 'C:\\Users\\testuser',
+      APPDATA: 'C:\\Users\\testuser\\AppData\\Roaming',
+      LOCALAPPDATA: 'C:\\Users\\testuser\\AppData\\Local',
+      HOME: 'C:\\Users\\testuser',
+      LANG: 'en_US.UTF-8',
+      NPM_TOKEN: 'secret_npm_token_12345',
+      GITHUB_TOKEN: 'ghp_secret_github_token_xyz',
+      OPENAI_API_KEY: 'sk-secret-openai-key',
+      ANTHROPIC_API_KEY: 'sk-ant-secret',
+      AWS_SECRET_ACCESS_KEY: 'aws_secret',
+      CUSTOM_SAFE_VAR: 'safe_value',
+    };
+
+    const dummyContract: ContractPayload = {
+      contract_id: 'fc_dummy_1',
+      requester_agent: 'antigravity',
+      target_agent: 'workbuddy',
+      task_type: 'code_review',
+      title: 'Dummy Task',
+      context_summary: 'Dummy summary',
+      workspace_root: dir,
+      pointers: [],
+      contract_schema: null,
+      claimed_at: Date.now(),
+      exec_ttl_sec: 300,
+      claim_token: 'lease-dummy-1',
+    };
+
+    // Test Windows platform allowlist
+    const winEnv = buildChildEnv(dummyContract, [], testHostEnv, 'win32').env;
+    assert.strictEqual(winEnv.NPM_TOKEN, undefined, 'NPM_TOKEN must be stripped on Windows');
+    assert.strictEqual(winEnv.GITHUB_TOKEN, undefined, 'GITHUB_TOKEN must be stripped on Windows');
+    assert.strictEqual(winEnv.OPENAI_API_KEY, undefined, 'OPENAI_API_KEY must be stripped on Windows');
+    assert.strictEqual(winEnv.CUSTOM_SAFE_VAR, undefined, 'Non-allowlisted vars must be stripped on Windows');
+    assert.strictEqual(winEnv.USERPROFILE, 'C:\\Users\\testuser', 'USERPROFILE must be preserved on Windows');
+    assert.strictEqual(winEnv.APPDATA, 'C:\\Users\\testuser\\AppData\\Roaming', 'APPDATA must be preserved on Windows');
+    assert.strictEqual(winEnv.FERRYCAT_CONTRACT_ID, 'fc_dummy_1');
+    assert.strictEqual(winEnv.FERRYCAT_CLAIM_TOKEN, 'lease-dummy-1');
+
+    // Test Linux / POSIX platform allowlist (does NOT include USERPROFILE/APPDATA)
+    const linuxEnv = buildChildEnv(dummyContract, [], testHostEnv, 'linux').env;
+    assert.strictEqual(linuxEnv.NPM_TOKEN, undefined, 'NPM_TOKEN must be stripped on Linux');
+    assert.strictEqual(linuxEnv.GITHUB_TOKEN, undefined, 'GITHUB_TOKEN must be stripped on Linux');
+    assert.strictEqual(linuxEnv.USERPROFILE, undefined, 'USERPROFILE is not a POSIX variable and must not leak');
+    assert.strictEqual(linuxEnv.APPDATA, undefined, 'APPDATA is not a POSIX variable and must not leak');
+    assert.strictEqual(linuxEnv.HOME, 'C:\\Users\\testuser', 'HOME must be preserved on Linux');
+    assert.strictEqual(linuxEnv.LANG, 'en_US.UTF-8', 'LANG must be preserved on Linux');
+    assert.strictEqual(linuxEnv.FERRYCAT_CONTRACT_ID, 'fc_dummy_1');
+    assert.strictEqual(linuxEnv.FERRYCAT_CLAIM_TOKEN, 'lease-dummy-1');
+
+    // Test explicit passEnv forwarding (user-consented) on both platforms
+    const passedEnv = buildChildEnv(
+      dummyContract,
+      ['CUSTOM_SAFE_VAR'],
+      testHostEnv,
+      'win32'
+    ).env;
+    assert.strictEqual(passedEnv.CUSTOM_SAFE_VAR, 'safe_value', 'Explicit passEnv variable must be forwarded');
+    console.log('  PASS [13A - CK-06 Environment Allowlist]: Whitelist enforced across win32 and linux, tokens stripped.');
+
+    // -------------------------------------------------------------------------
+    // 13B: CK-01 & CK-02: Heartbeat keep-alive past initial exec_ttl
+    // -------------------------------------------------------------------------
+    const engine = new FerryCatEngine({ dbPath });
+    assert.strictEqual(engine.dbPath, dbPath, 'Test 13 must strictly use isolated temp dbPath');
+    const cKeepAlive = engine.dispatchContract({
+      requester_agent: 'gui',
+      target_agent: 'supervisor-worker',
+      task_type: 'code_review',
+      title: 'Keep-alive Test',
+      context_summary: 'Verify heartbeat renewal during execution',
+      workspace_root: dir,
+      pointers: [{ path: 'code.ts' }],
+      exec_ttl_sec: 1, // Short 1-second TTL to test fast renewals
+    });
+
+    const claimedKeepAlive = engine.pollNextTask({ agent_id: 'supervisor-worker' });
+    assert.ok(claimedKeepAlive.contract);
+
+    // Create a slow script that takes 1.8 seconds (exceeding 1.0s exec_ttl_sec)
+    const slowScript = path.join(dir, 'slow_worker.cjs');
+    fs.writeFileSync(
+      slowScript,
+      `
+      setTimeout(() => {
+        console.log(JSON.stringify({ result_summary: "Slow script finished cleanly after 1800ms" }));
+        process.exit(0);
+      }, 1800);
+      `
+    );
+
+    const renewalEvents: Record<string, unknown>[] = [];
+    const execResult = await executeTaskAndFulfill(
+      engine,
+      claimedKeepAlive.contract as unknown as ContractPayload,
+      { execFile: slowScript },
+      {
+        heartbeatIntervalMs: 400, // Ticks every 400ms
+        onEvent: (ev) => renewalEvents.push(ev),
+      }
+    );
+
+    assert.strictEqual(execResult.ok, true, `Execution must succeed: ${execResult.error}`);
+    assert.strictEqual(execResult.status, 'COMPLETED');
+    const renewEvents = renewalEvents.filter((e) => e.event === 'HEARTBEAT_RENEWED');
+    assert.ok(
+      renewEvents.length >= 3,
+      `Expected at least 3 heartbeat renewals during 1800ms execution, got ${renewEvents.length}`
+    );
+    const lastRenew = renewEvents[renewEvents.length - 1];
+    assert.ok(
+      Number(lastRenew.extend_count) < 5,
+      `Heartbeat renewal count (${lastRenew.extend_count}) must have headroom under the hard cap of 5`
+    );
+    console.log(`  PASS [13B - CK-01/02 Heartbeat Keep-Alive]: Kept alive across ${renewEvents.length} renewals and COMPLETED.`);
+
+    // -------------------------------------------------------------------------
+    // 13C: CK-04 & CK-05: Process tree termination (grandchild process cleanup)
+    // -------------------------------------------------------------------------
+    const markerFile = path.join(dir, 'grandchild_marker.txt');
+    const parentScript = path.join(dir, 'spawn_grandchild.cjs');
+    const markerFileNorm = markerFile.replace(/\\/g, '/');
+    fs.writeFileSync(
+      parentScript,
+      `
+      const { spawn } = require('node:child_process');
+      const fs = require('node:fs');
+      // Spawn grandchild that writes ticks to file
+      const grandchild = spawn(process.execPath, [
+        '-e',
+        'const fs = require("node:fs"); fs.writeFileSync(process.argv[1], "init\\\\n"); setInterval(() => { try { fs.appendFileSync(process.argv[1], "tick\\\\n"); } catch {} }, 80);',
+        ${JSON.stringify(markerFileNorm)}
+      ], { stdio: 'ignore' });
+      // Keep parent alive
+      setInterval(() => {}, 1000);
+      `
+    );
+
+    const parentProc = spawn(process.execPath, [parentScript], {
+      stdio: 'ignore',
+      detached: process.platform !== 'win32',
+    });
+    assert.ok(parentProc.pid);
+    const supervisedParent = createSupervisedChild(parentProc);
+
+    // Wait until marker file exists and has written data
+    let attempts = 0;
+    while (!fs.existsSync(markerFile) && attempts++ < 30) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(fs.existsSync(markerFile), 'Grandchild marker file should exist and have ticks');
+    // Let it accumulate a few ticks
+    await new Promise((r) => setTimeout(r, 300));
+    const sizeBefore = fs.statSync(markerFile).size;
+    assert.ok(sizeBefore > 0, 'Grandchild must have written to marker file');
+
+    // Terminate parent process tree via production SupervisedChild handle
+    await terminateProcessTree(supervisedParent, 200);
+
+    // Wait 150ms for Windows I/O flush after kill, then sample size
+    await new Promise((r) => setTimeout(r, 150));
+    const sizeAfterKill = fs.statSync(markerFile).size;
+
+    // Wait an additional 400ms and verify marker file size has completely stopped growing
+    await new Promise((r) => setTimeout(r, 400));
+    const sizeAfterWait = fs.statSync(markerFile).size;
+    assert.strictEqual(
+      sizeAfterWait,
+      sizeAfterKill,
+      'Grandchild process must be killed; file size must not increase after termination'
+    );
+    console.log('  PASS [13C - CK-04 Process Tree Kill]: Parent and grandchild terminated cleanly without orphaned writes.');
+
+    // -------------------------------------------------------------------------
+    // 13D: CK-07: Partial-output salvage on child timeout / failure (End-to-End)
+    // -------------------------------------------------------------------------
+    const cSalvage = engine.dispatchContract({
+      requester_agent: 'gui',
+      target_agent: 'supervisor-worker',
+      task_type: 'code_review',
+      title: 'Salvage Output Test',
+      context_summary: 'Verify partial output salvage on timeout',
+      workspace_root: dir,
+      pointers: [{ path: 'code.ts' }],
+      exec_ttl_sec: 1, // 1s
+    });
+
+    const claimedSalvage = engine.pollNextTask({ agent_id: 'supervisor-worker' });
+    assert.ok(claimedSalvage.contract);
+
+    // Script that prints important progress logs then hangs
+    const hangingScript = path.join(dir, 'hanging_worker.cjs');
+    fs.writeFileSync(
+      hangingScript,
+      `
+      console.log("CRITICAL STEP 1: Parsed 50 files successfully");
+      console.log("CRITICAL STEP 2: Found potential security flaw in auth.ts");
+      // Intentionally hang indefinitely
+      setInterval(() => {}, 5000);
+      `
+    );
+
+    const salvageResult = await executeTaskAndFulfill(
+      engine,
+      claimedSalvage.contract as unknown as ContractPayload,
+      { execFile: hangingScript },
+      {
+        heartbeatIntervalMs: 150, // Ticks fast to reach renewals and exhaust quickly
+        killGraceMs: 150,
+        maxBufferBytes: 1024 * 1024,
+      }
+    );
+
+    // Assert the full end-to-end CK-07 chain: window exhausted -> salvage triggered -> process killed -> final state
+    assert.strictEqual(salvageResult.ok, false);
+    assert.strictEqual(salvageResult.status, 'EXEC_WINDOW_EXHAUSTED');
+    assert.strictEqual(salvageResult.salvaged, true, 'salvaged flag must be true');
+
+    const salvageCheck = engine.inspectMeshState({ contract_id: cSalvage.contract_id });
+    assert.strictEqual(salvageCheck.contracts.length, 1);
+    const salvagedObj = salvageCheck.contracts[0].salvaged_result as {
+      partial_stdout?: string;
+      stdout_tail?: string;
+      reason?: string;
+    } | null;
+    assert.ok(salvagedObj, 'Contract in DB must have salvaged_result recorded');
+    const salvagedStdout = salvagedObj.partial_stdout ?? salvagedObj.stdout_tail ?? '';
+    assert.ok(
+      salvagedStdout.includes('CRITICAL STEP 2: Found potential security flaw in auth.ts'),
+      'Salvaged output must contain partial stdout generated before freeze'
+    );
+    console.log('  PASS [13D - CK-07 Salvage Verification]: Output capture preserved with end-to-end assertions.');
+
+    // -------------------------------------------------------------------------
+    // 13E: CK-03: Optimistic concurrency collision resilience during heartbeat
+    // -------------------------------------------------------------------------
+    const cCollision = engine.dispatchContract({
+      requester_agent: 'gui',
+      target_agent: 'supervisor-worker',
+      task_type: 'code_review',
+      title: 'Concurrency Collision Test',
+      context_summary: 'Verify supervisor handles external lease renewal gracefully',
+      workspace_root: dir,
+      pointers: [{ path: 'code.ts' }],
+      exec_ttl_sec: 1,
+    });
+    const claimedCollision = engine.pollNextTask({ agent_id: 'supervisor-worker' });
+    assert.ok(claimedCollision.contract);
+    const tokenCollision = claimedCollision.contract.claim_token;
+    assert.ok(tokenCollision);
+
+    // Run a script with executeTaskAndFulfill while triggering a concurrent extendTtl
+    const collisionScript = path.join(dir, 'collision_worker.cjs');
+    fs.writeFileSync(
+      collisionScript,
+      `
+      setTimeout(() => {
+        console.log(JSON.stringify({ result_summary: "Finished after concurrent extend" }));
+        process.exit(0);
+      }, 700);
+      `
+    );
+
+    const collisionEvents: Record<string, unknown>[] = [];
+    // Concurrent task: at 250ms, externally bump extend_count so the next tick experiences state mismatch
+    setTimeout(() => {
+      try {
+        engine.extendTtl({
+          contract_id: cCollision.contract_id,
+          agent_id: 'supervisor-worker',
+          claim_token: tokenCollision,
+        });
+      } catch {}
+    }, 250);
+
+    const collisionResult = await executeTaskAndFulfill(
+      engine,
+      claimedCollision.contract as unknown as ContractPayload,
+      { execFile: collisionScript },
+      {
+        heartbeatIntervalMs: 200,
+        onEvent: (ev) => collisionEvents.push(ev),
+      }
+    );
+
+    assert.strictEqual(collisionResult.ok, true, `Worker must survive optimistic collision: ${collisionResult.error}`);
+    assert.strictEqual(collisionResult.status, 'COMPLETED');
+
+    // Supervisor inspects lease snapshot (CK-03)
+    const snapshot = engine.getLeaseSnapshot(cCollision.contract_id);
+    assert.ok(snapshot);
+    assert.strictEqual(snapshot.status, 'COMPLETED');
+    console.log('  PASS [13E - CK-03 Concurrency Collision]: Worker survived concurrent lease renewal and COMPLETED.');
+
+    // -------------------------------------------------------------------------
+    // 13F: CK-07 Engine recordSalvage method verification
+    // -------------------------------------------------------------------------
+    const cSalvageDirect = engine.dispatchContract({
+      requester_agent: 'gui',
+      target_agent: 'supervisor-worker',
+      task_type: 'code_review',
+      title: 'Direct Salvage Test',
+      context_summary: 'Verify engine recordSalvage on active claim',
+      workspace_root: dir,
+      pointers: [{ path: 'code.ts' }],
+    });
+    const claimedDirect = engine.pollNextTask({ agent_id: 'supervisor-worker' });
+    assert.ok(claimedDirect.contract);
+    const tokenDirect = claimedDirect.contract.claim_token;
+    assert.ok(tokenDirect);
+
+    const salvagePayload = {
+      partial_stdout: 'CRITICAL STEP 1: Analyzed AST\nCRITICAL STEP 2: Found bug',
+      partial_stderr: '',
+      reason: 'TEST_SALVAGE',
+      salvaged_at: Date.now(),
+    };
+    const salvageRes = engine.recordSalvage({
+      contract_id: cSalvageDirect.contract_id,
+      agent_id: 'supervisor-worker',
+      claim_token: tokenDirect,
+      salvage: salvagePayload,
+    });
+    assert.strictEqual(salvageRes, true);
+
+    const inspected = engine.inspectMeshState({ contract_id: cSalvageDirect.contract_id });
+    assert.strictEqual(inspected.contracts.length, 1);
+    const inspectedRow = inspected.contracts[0];
+    assert.ok(inspectedRow.salvaged_result);
+    assert.strictEqual(
+      (inspectedRow.salvaged_result as Record<string, unknown>).partial_stdout,
+      salvagePayload.partial_stdout
+    );
+    // Contract status must remain CLAIMED (no state change)
+    assert.strictEqual(inspectedRow.status, 'CLAIMED');
+    console.log('  PASS [13F - CK-07/CK-09 Engine Record Salvage]: Preserved in DB without corrupting contract state machine.');
+
+    engine.close();
+  } finally {
+    cleanup();
+  }
+}
+
 async function main(): Promise<void> {
   console.log('==============================================================');
   console.log(' FerryCat Offline Verification Suite (Node ' + process.version + ')');
@@ -1726,9 +2091,10 @@ async function main(): Promise<void> {
   await test10_LegacySchemaMigrationAndCliLifecycle();
   await test11_PhaseBCliErgonomicsAndToctouBuffer();
   await test12_Phase031_LeaseTokensAndPayloadLimits();
+  await test13_Step0SupervisorHardening();
 
   console.log('\n==============================================================');
-  console.log(' ALL 12 TEST SUITES PASSED GREEN');
+  console.log(' ALL 13 TEST SUITES PASSED GREEN');
   console.log('==============================================================');
 }
 

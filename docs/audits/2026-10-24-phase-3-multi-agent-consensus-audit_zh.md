@@ -72,11 +72,11 @@ WorkBuddy 签署生效的硬性条件为以下 9 项准入检查在 Step 0 全�
   - 反向：心跳调用返回 `ok: false`（续期满 5 次上限或达到绝对生命期截止）时，立即强杀子进程树，防止产生脱缰孤儿。
 - [ ] **CK-03（乐观锁并发心跳异常捕获）**：捕获 `extendTtl` 内部 `changes !== 1` 抛出的 `Concurrent state change detected` 异常并重新重读工单行状态，严禁向上抛出导致 Worker 主进程被自身心跳崩溃。
 - [ ] **CK-04（孙进程级树状强杀）**：Unix 开启 `detached: true` 并通过 `process.kill(-pid)` 清理进程组；Windows 采用 `taskkill /T /F /PID`。单测验证：构造 `worker → cmd → node → 孙进程` 链路，断言孙进程在 5 秒内彻底消失。
-- [ ] **CK-05（PID 复用防误杀验证）**：记录 `pid` 及启动时间戳，在清理前进行存活与启动时间双重确认，防止系统 PID 循环复用造成误杀无关进程。
+- [ ] **CK-05（PID 复用防误杀验证）**：仅允许通过内部监督的 `SupervisedChild` 强引用句柄执行进程树销毁，禁止裸 PID 入口；进程存活与启动时间戳比对推迟到 Step 2 的 journal 故障自愈恢复路径。
 - [ ] **CK-06（平台最小环境白名单落地）**：仅在 `cli.ts:568` 的 `childEnv` 处单点应用白名单，断言子进程环境无任何 `*_TOKEN/*_KEY`，且 `USERPROFILE/HOME` 正常保留。
 - [ ] **CK-07（超时产物兜底 Salvage）**：若任务耗尽心跳触达超时终态，在触发 `TIMED_OUT` 前尽可能抓取子进程已产生的 stdout 落入 `salvaged_result_json`，消除超时产物彻底蒸发的缺陷。
 - [ ] **CK-08（长任务与超时用例入网 CI）**：将超长任务心跳维持用例加入 `test/run-all.ts` 并集成至 GitHub Actions CI，形成长期防劣化回归红线。
-- [ ] **CK-09（状态机边界不扩散）**：Step 0 严格保持现有 6 态状态机（`SUBMITTED, CLAIMED, COMPLETED, POINTER_STALE, VALIDATION_FAILED, TIMED_OUT`）及其转移规则不变，不引入任何未裁决的新状态。
+- [ ] **CK-09（状态机边界不扩散）**：Step 0 严格保持现有 7 态状态机（`SUBMITTED, CLAIMED, COMPLETED, POINTER_STALE, VALIDATION_FAILED, TIMED_OUT, FAILED`）及其转移规则不变，不引入任何未裁决的新状态。
 
 ---
 

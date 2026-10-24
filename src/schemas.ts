@@ -365,6 +365,10 @@ export const WorkerCommandShape = {
     .describe(
       'Recommended script file (.js/.mjs/.cjs/.ts/.ps1/.sh) to execute directly via execFile without shell quote escaping or injection risks.'
     ),
+  pass_env: z
+    .array(z.string().min(1).max(128))
+    .optional()
+    .describe('List of explicit host environment variable names to forward into child execution environment (CK-06)'),
 };
 
 export const WorkerCommandSchema = z.object(WorkerCommandShape).strict();

@@ -1,10 +1,15 @@
 #!/usr/bin/env node
-import { exec, execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ZodError } from 'zod';
 import { expandTilde, FerryCatEngine } from './engine.js';
+import {
+  executeTaskAndFulfill,
+  terminateActiveChildrenSync,
+  type ContractPayload,
+  type ExecSpec,
+} from './supervisor.js';
 import {
   DispatchContractSchema,
   ExtendTtlSchema,
@@ -420,6 +425,14 @@ function parseArgs(argv: string[]): ParsedCliArgs {
         throw new Error('Invalid --exec-file value: script path cannot be empty.');
       }
       flagOverrides.exec_file = scriptPath;
+    } else if (token === '--pass-env') {
+      const varName = requireFlagValue('--pass-env', rest[++i]).trim();
+      if (!varName) {
+        throw new Error('Invalid --pass-env value: variable name cannot be empty.');
+      }
+      const existing = (flagOverrides.pass_env as string[] | undefined) ?? [];
+      existing.push(varName);
+      flagOverrides.pass_env = existing;
     } else if (token === '--format') {
       const fmt = requireFlagValue('--format', rest[++i]).trim().toLowerCase();
       if (fmt !== 'table' && fmt !== 'json') {
@@ -503,204 +516,6 @@ function interruptibleSleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-interface ContractPayload {
-  contract_id: string;
-  requester_agent: string;
-  target_agent: string;
-  task_type: string;
-  title: string;
-  context_summary: string;
-  workspace_root: string;
-  pointers: unknown[];
-  contract_schema: Record<string, unknown> | null;
-  claimed_at: number;
-  exec_ttl_sec: number;
-  claim_token?: string;
-}
-
-interface ExecSpec {
-  execCmd?: string;
-  execFile?: string;
-}
-
-function spawnExecTarget(
-  spec: ExecSpec,
-  options: { env: NodeJS.ProcessEnv; timeout: number; maxBuffer: number },
-  callback: (err: Error | null, stdout: string, stderr: string) => void
-) {
-  if (spec.execFile) {
-    const resolvedScript = path.resolve(expandTilde(spec.execFile));
-    const ext = path.extname(resolvedScript).toLowerCase();
-    if (ext === '.js' || ext === '.mjs' || ext === '.cjs') {
-      return execFile(process.execPath, [resolvedScript], options, callback);
-    }
-    if (ext === '.ts') {
-      return execFile(process.execPath, ['--import', 'tsx', resolvedScript], options, callback);
-    }
-    if (ext === '.ps1') {
-      return execFile(
-        'powershell',
-        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', resolvedScript],
-        options,
-        callback
-      );
-    }
-    if (ext === '.sh') {
-      return execFile('sh', [resolvedScript], options, callback);
-    }
-    return execFile(resolvedScript, [], options, callback);
-  }
-  return exec(spec.execCmd!, options, callback);
-}
-
-async function executeTaskAndFulfill(
-  engine: FerryCatEngine,
-  contract: ContractPayload,
-  spec: ExecSpec
-): Promise<{
-  ok: boolean;
-  status: string;
-  fulfill_result?: unknown;
-  error?: string;
-  contract_status?: string;
-}> {
-  return new Promise((resolve) => {
-    const childEnv = {
-      ...process.env,
-      FERRYCAT_CONTRACT_ID: contract.contract_id,
-      FERRYCAT_TASK_TYPE: contract.task_type,
-      FERRYCAT_WORKSPACE_ROOT: contract.workspace_root,
-      FERRYCAT_TARGET_AGENT: contract.target_agent,
-      FERRYCAT_CLAIM_TOKEN: contract.claim_token ?? '',
-    };
-
-    const timeoutMs = Math.max(10000, contract.exec_ttl_sec * 1000);
-    const maxBuffer = 10 * 1024 * 1024;
-    const label = spec.execFile ?? spec.execCmd ?? 'exec';
-
-    const child = spawnExecTarget(
-      spec,
-      { env: childEnv, timeout: timeoutMs, maxBuffer },
-      (err, stdout, stderr) => {
-        if (err) {
-          const execErr = err as Error & { code?: number | string; killed?: boolean };
-          const execError = `External exec command failed with code ${execErr.code ?? 1}${execErr.killed ? ' (killed after exec timeout)' : ''}: ${stderr || execErr.message}`;
-          let contractStatus: string | undefined;
-          try {
-            contractStatus = engine.failContract({
-              contract_id: contract.contract_id,
-              agent_id: contract.target_agent,
-              claim_token: contract.claim_token,
-              reason: execError.slice(0, 2000),
-            }).status;
-          } catch (failErr) {
-            contractStatus = `UNCHANGED (${failErr instanceof Error ? failErr.message : String(failErr)})`;
-          }
-          return resolve({
-            ok: false,
-            status: 'EXEC_FAILED',
-            error: execError,
-            contract_status: contractStatus,
-          });
-        }
-
-        let structuredOutput: Record<string, unknown> | undefined;
-        let resultSummary = stripBom(stdout).trim();
-
-        try {
-          const parsed = JSON.parse(resultSummary);
-          if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-            if (parsed.structured_output && typeof parsed.structured_output === 'object') {
-              structuredOutput = parsed.structured_output as Record<string, unknown>;
-            } else {
-              structuredOutput = parsed as Record<string, unknown>;
-            }
-            if (parsed.result_summary && typeof parsed.result_summary === 'string') {
-              resultSummary = parsed.result_summary;
-            }
-          }
-        } catch {
-          // Plain text stdout, fallback to result_summary
-        }
-
-        const boundedSummary = (
-          resultSummary || `Completed via automated worker exec: ${label}`
-        ).slice(0, 20000);
-
-        try {
-          const validatedFulfillInput = FulfillContractSchema.parse({
-            contract_id: contract.contract_id,
-            agent_id: contract.target_agent,
-            claim_token: contract.claim_token,
-            result_summary: boundedSummary,
-            structured_output: structuredOutput,
-          });
-
-          let fulfillRes = engine.fulfillContract(validatedFulfillInput);
-
-          // If RETRY_NEEDED occurs in automated exec (schema retry vs TOCTOU strike 1):
-          if (fulfillRes.status === 'RETRY_NEEDED') {
-            // RETRY_NEEDED has two distinct causes with incompatible retry semantics:
-            //   (a) schema validation failure -> retry_count increments, so retrying the
-            //       same payload until the breaker trips is the intended behavior.
-            //   (b) TOCTOU dirty pointers     -> retry_count does NOT move. The on-disk
-            //       baseline cannot heal between two consecutive calls, so retrying only
-            //       burns the single ADR-0004 strike and forces a terminal POINTER_STALE
-            //       with nobody in the loop to restore the files. Never auto-retry it.
-            const isToctouRejection =
-              (fulfillRes.toctou_strike ?? 0) > 0 && (fulfillRes.retry_count ?? 0) === 0;
-            if (isToctouRejection) {
-              resolve({
-                ok: false,
-                status: 'TOCTOU_RESCUE_REQUIRED',
-                fulfill_result: fulfillRes,
-                error:
-                  'Automated exec mutated pointer files. The contract stays CLAIMED with a renewed execution window. Restore the files (git stash / git checkout) and re-run, or deliver edits via structured_output.fixes instead of writing to the workspace.',
-              });
-              return;
-            }
-
-            const maxAttempts = (fulfillRes.max_retries ?? 2) + 1;
-            for (let i = fulfillRes.retry_count ?? 1; i < maxAttempts; i++) {
-              fulfillRes = engine.fulfillContract(validatedFulfillInput);
-              if (fulfillRes.status !== 'RETRY_NEEDED') break;
-            }
-          }
-
-          resolve({ ok: fulfillRes.ok, status: fulfillRes.status, fulfill_result: fulfillRes });
-        } catch (fulfillErr) {
-          const fulfillError =
-            fulfillErr instanceof Error ? fulfillErr.message : String(fulfillErr);
-          let contractStatus: string | undefined;
-          try {
-            contractStatus = engine.failContract({
-              contract_id: contract.contract_id,
-              agent_id: contract.target_agent,
-              reason: `FULFILL_ERROR: ${fulfillError}`.slice(0, 2000),
-            }).status;
-          } catch {
-            contractStatus = undefined;
-          }
-          resolve({
-            ok: false,
-            status: 'FULFILL_ERROR',
-            error: fulfillError,
-            contract_status: contractStatus,
-          });
-        }
-      }
-    );
-
-    if (child.stdin) {
-      child.stdin.on('error', () => {
-        // Child process exited without consuming stdin, ignore EPIPE
-      });
-      child.stdin.write(JSON.stringify(contract));
-      child.stdin.end();
-    }
-  });
-}
-
 async function runWorkerLoop(
   engine: FerryCatEngine,
   agentId: string | undefined,
@@ -731,10 +546,11 @@ async function runWorkerLoop(
   const stopHandler = () => {
     sigintCount++;
     if (sigintCount >= 2) {
+      terminateActiveChildrenSync();
       console.error(
         JSON.stringify({
           status: 'WORKER_FORCE_EXIT',
-          message: 'Second interrupt received, exiting immediately.',
+          message: 'Second interrupt received, terminated active child process trees and exiting immediately.',
         })
       );
       process.exit(130);
@@ -1127,6 +943,7 @@ async function main(): Promise<void> {
         const execSpec: ExecSpec = {
           execCmd: validated.exec,
           execFile: validated.exec_file,
+          passEnv: validated.pass_env,
         };
 
         engine = new FerryCatEngine();
