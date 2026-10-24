@@ -17,7 +17,7 @@
 > Purpose-built to safely bridge isolated desktop IDE agent hosts (such as Google Antigravity, WorkBuddy, Claude Code, and Cursor) across separate OS processes without context drift or blind reviews on stale files.
 
 <p align="center">
-  <img src="https://guobug.github.io/assets/images/flowchart-ferrycat-cross-host-demand-and-workflow.svg" alt="FerryCat Architecture and Workflow" width="960" />
+  <img src="https://guobug.github.io/assets/images/flowchart-ferrycat-cross-host-demand-and-workflow-en.svg" alt="FerryCat Architecture and Workflow" width="960" />
 </p>
 
 > 📖 **Deep Dive**: [Why I Started Building FerryCat: When Two AI Coding Hosts Live on the Same Desktop](https://guobug.github.io/posts/2026/10/22/why-we-built-ferrycat-cross-host-agent-review-bus/)
@@ -134,26 +134,18 @@ Holder-side lifecycle controls on a `CLAIMED` contract (all require `agent_id ==
 
 ## Quickstart
 
-### 1. Build & Verify
-```bash
-git clone https://github.com/GuoBug/FerryCat.git
-cd FerryCat
-npm install
-npm run build
-npm test
-```
+### 1. Recommended: Zero-Install MCP Mounting (via npx)
 
-### 2. Mount in Antigravity
+No local clone or manual compilation required. Mount directly into your IDE's MCP configuration using `npx -y ferrycat`:
+
+#### Antigravity Configuration
 Edit `%USERPROFILE%\.gemini\antigravity\mcp_config.json` (or `~/.gemini/antigravity/mcp_config.json` on macOS/Linux):
 ```json
 {
   "mcpServers": {
     "ferrycat": {
-      "command": "node",
-      "args": [
-        "--experimental-sqlite",
-        "F:/git/FerryCat/dist/index.js"
-      ],
+      "command": "npx",
+      "args": ["-y", "ferrycat"],
       "env": {
         "AGENT_NAME": "antigravity"
       }
@@ -162,17 +154,14 @@ Edit `%USERPROFILE%\.gemini\antigravity\mcp_config.json` (or `~/.gemini/antigrav
 }
 ```
 
-### 3. Mount in WorkBuddy / Claude Code / Cursor
+#### WorkBuddy / Claude Code / Cursor / Codex Configuration
 Configure the target host's MCP settings with its respective `AGENT_NAME`:
 ```json
 {
   "mcpServers": {
     "ferrycat": {
-      "command": "node",
-      "args": [
-        "--experimental-sqlite",
-        "F:/git/FerryCat/dist/index.js"
-      ],
+      "command": "npx",
+      "args": ["-y", "ferrycat"],
       "env": {
         "AGENT_NAME": "workbuddy"
       }
@@ -180,7 +169,53 @@ Configure the target host's MCP settings with its respective `AGENT_NAME`:
   }
 }
 ```
-> **Note**: Both MCP Stdio and direct CLI invocation (`ferrycat-cli <dispatch|poll|verify|fulfill|release|extend|fail|inspect|worker>`) share the same SQLite WAL database at `~/.ferrycat/mesh.db` and the same Zod validation schemas. CLI supports `--help` tree, stdin payloads (`--file -` or `-`), `verify` pre-flight check, `inspect` ASCII table formatting (`--target <agent>`), `worker --mode=watch|claim|exec` and direct script execution via `--exec-file <script>`. In `worker --exec` mode, a non-zero exit of the child command closes the contract as `FAILED` instead of leaving it `CLAIMED` until the TTL sweep.
+
+### 2. Global Installation & Source Build
+
+- **Global CLI Installation**:
+  ```bash
+  npm install -g ferrycat
+  ```
+  Then simply set `"command": "ferrycat"` in your MCP config.
+- **Local Source Build (For Contributors)**:
+  ```bash
+  git clone https://github.com/GuoBug/FerryCat.git
+  cd FerryCat
+  npm install
+  npm run build
+  npm test
+  ```
+  Mount using your local path:
+  `"command": "node"`, `"args": ["--experimental-sqlite", "/path/to/FerryCat/dist/index.js"]`.
+
+---
+
+## First-Class CLI Experience (`ferrycat-cli`)
+
+Beyond serving as an in-IDE MCP Server, FerryCat provides a first-class CLI utility (`ferrycat-cli` or `npx ferrycat-cli`). Sharing the same `~/.ferrycat/mesh.db` SQLite WAL database and Zod validation contracts, the CLI allows developers to inspect mesh health, verify working tree safety, and hook into automated CI/Git scripts without leaving their terminal:
+
+### 1. Terminal Visual Inspection (ASCII Status Table)
+Inspect all cross-host handoffs and error reasons formatted as an ASCII table:
+```bash
+# View all contracts in an ASCII table
+npx ferrycat-cli inspect
+
+# Filter by target agent (e.g., only tasks for antigravity)
+npx ferrycat-cli inspect --target antigravity
+```
+
+### 2. Pre-Flight Verification (Auditing Before Mutation)
+Audit on-disk pointer file integrity against the contract's baseline SHA-256 before committing review work (ADR-0004), eliminating false-positive deliveries:
+```bash
+npx ferrycat-cli verify <CONTRACT_ID>
+```
+
+### 3. Local CI & Headless Worker Execution
+Poll the queue, claim tasks, and execute local review/test scripts with automatic failure closure:
+```bash
+# Safely run a script upon task arrival (no shell quotation hazards)
+npx ferrycat-cli worker --agent codex --mode=exec --exec-file ./scripts/review.sh
+```
 
 ---
 

@@ -132,30 +132,20 @@ MCP 官方的 `Tasks` 规范（2025-11 / 2026-07）解决的是**单条 `Client 
 
 ---
 
-## 快速上手
+## 快速上手 (Quickstart)
 
-### 1. 安装与编译测试
-```bash
-git clone https://github.com/GuoBug/FerryCat.git
-cd FerryCat
-npm install
-npm run build
-npm test
-```
+### 1. 推荐：零配置免安装挂载 (npx)
 
-> **关于 `--experimental-sqlite`**：启动参数中恒定携带 `--experimental-sqlite`，以同时兼容 Node 22.12 LTS（需 flag）与 Node 22.22+ / Node 24+（原生免 flag，携带亦不报错），实现零原生 C++ 编译依赖。
+无需手动克隆仓库或本地编译，直接在各 IDE 宿主的 MCP 配置文件中声明（基于全局或 `npx -y ferrycat`）：
 
-### 2. Antigravity 侧挂载
+#### Antigravity 宿主配置
 编辑 `%USERPROFILE%\.gemini\antigravity\mcp_config.json`（macOS/Linux 为 `~/.gemini/antigravity/mcp_config.json`）：
 ```json
 {
   "mcpServers": {
     "ferrycat": {
-      "command": "node",
-      "args": [
-        "--experimental-sqlite",
-        "F:/git/FerryCat/dist/index.js"
-      ],
+      "command": "npx",
+      "args": ["-y", "ferrycat"],
       "env": {
         "AGENT_NAME": "antigravity"
       }
@@ -164,17 +154,14 @@ npm test
 }
 ```
 
-### 3. WorkBuddy / Claude Code / Cursor 侧挂载
-在目标宿主的 MCP 配置文件中添加对应 `AGENT_NAME`：
+#### WorkBuddy / Claude Code / Cursor / Codex 宿主配置
+在目标宿主的 MCP 配置文件中指定对应 `AGENT_NAME` 即可：
 ```json
 {
   "mcpServers": {
     "ferrycat": {
-      "command": "node",
-      "args": [
-        "--experimental-sqlite",
-        "F:/git/FerryCat/dist/index.js"
-      ],
+      "command": "npx",
+      "args": ["-y", "ferrycat"],
       "env": {
         "AGENT_NAME": "workbuddy"
       }
@@ -182,7 +169,53 @@ npm test
   }
 }
 ```
-> **注**：MCP `stdio` 模式与 CLI 直接调用模式（`ferrycat-cli <dispatch|poll|verify|fulfill|release|extend|fail|inspect|worker>`）共享同一份 `~/.ferrycat/mesh.db` 数据库与同一套 Zod 参数校验契约。CLI 提供全量 `--help` 树、stdin 管道输入（`--file -` 或 `-`）、`verify` 只读预检、`inspect` ASCII 表格输出（支持 `--target <agent>` 过滤）、`worker --mode=watch|claim|exec` 以及 `--exec-file <script>` 无转义直接执行脚本。在 `worker --exec` 模式下子进程非零退出时，工单会被直接置为 `FAILED`，不再挂在 `CLAIMED` 等超时。
+
+### 2. 全局安装或本地源码模式
+
+- **全局 CLI 安装**：
+  ```bash
+  npm install -g ferrycat
+  ```
+  在 MCP 配置文件中直接指定 `"command": "ferrycat"` 即可。
+- **本地源码编译（适合贡献者二次开发）**：
+  ```bash
+  git clone https://github.com/GuoBug/FerryCat.git
+  cd FerryCat
+  npm install
+  npm run build
+  npm test
+  ```
+  本地调试时可将配置中的 `command` 与 `args` 设为：
+  `"command": "node"`, `"args": ["--experimental-sqlite", "/path/to/FerryCat/dist/index.js"]`。
+
+---
+
+## 一级入口：CLI 极速总线与自动化调度 (`ferrycat-cli`)
+
+除了作为 MCP Server 嵌入在 IDE 内部供大模型自主调用外，FerryCat 原生提供一级命令行工具 **`ferrycat-cli`**（可通过全局安装或直接运行 `npx ferrycat-cli`）。它与 MCP 共享同一份 `~/.ferrycat/mesh.db` 数据库与 Zod 校验契约，无需切换 IDE 窗口即可在终端直观排查链路、接入 Git Hook 或自动化 CI：
+
+### 1. 终端可视化监控（ASCII 状态总线）
+实时打印工单流转状态、执行租约与报错信息，无需打开数据库查看：
+```bash
+# 查看全局工单 ASCII 终端表格
+npx ferrycat-cli inspect
+
+# 按接收方过滤（例如仅查看 target 为 antigravity 的工单）
+npx ferrycat-cli inspect --target antigravity
+```
+
+### 2. 交付前只读预检（Pre-Flight Verify）
+在正式交付前，无需变更契约状态即可安全核验磁盘文件指针一致性，杜绝因未落盘修改导致的假阳性交付：
+```bash
+npx ferrycat-cli verify <CONTRACT_ID>
+```
+
+### 3. 本地 CI 与自动化 Worker 执行
+监听契约队列并直接拉起本地脚本执行（支持安全脚本执行与非零退出自动熔断为 `FAILED`）：
+```bash
+# 启动常驻 Worker 监听并自动执行指定脚本（无 Shell 注入风险）
+npx ferrycat-cli worker --agent codex --mode=exec --exec-file ./scripts/review.sh
+```
 
 ---
 

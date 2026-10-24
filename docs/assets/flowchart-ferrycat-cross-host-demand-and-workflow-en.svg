@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 620" width="960" height="620" style="background:#090d16; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0a0f1d"/>
+      <stop offset="100%" stop-color="#050811"/>
+    </linearGradient>
+    <filter id="neoShadow" x="-3%" y="-3%" width="106%" height="106%">
+      <feDropShadow dx="3" dy="4" stdDeviation="0" flood-color="#000000" flood-opacity="0.85"/>
+    </filter>
+    <marker id="arrowRed" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#f43f5e"/>
+    </marker>
+    <marker id="arrowCyan" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#06b6d4"/>
+    </marker>
+    <marker id="arrowEmerald" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#10b981"/>
+    </marker>
+  </defs>
+
+  <!-- Background Base -->
+  <rect width="960" height="620" fill="url(#bgGrad)"/>
+  <rect x="12" y="12" width="936" height="596" rx="8" fill="none" stroke="#1e293b" stroke-width="2"/>
+
+  <!-- Top Title Banner -->
+  <rect x="28" y="24" width="904" height="54" rx="6" fill="#0f172a" stroke="#334155" stroke-width="2" filter="url(#neoShadow)"/>
+  <text x="44" y="57" font-size="14.5" font-weight="800" fill="#f8fafc" letter-spacing="0.5">FERRYCAT · Why Multi-Host AI Workstations Require a Deterministic Contract Bus</text>
+  <rect x="668" y="36" width="248" height="30" rx="4" fill="#064e3b" stroke="#10b981" stroke-width="1.5"/>
+  <text x="682" y="56" font-size="11" font-weight="700" fill="#6ee7b7">REAL WORKFLOW · 3 MODELS VERIFIED</text>
+
+  <!-- ================= UPPER HALF: WITHOUT FERRYCAT (PAIN POINTS) ================= -->
+  <g transform="translate(28, 92)">
+    <rect width="904" height="202" rx="8" fill="#140c14" stroke="#f43f5e" stroke-width="2" filter="url(#neoShadow)"/>
+    <rect x="14" y="12" width="410" height="26" rx="4" fill="#be123c"/>
+    <text x="24" y="29" font-size="11" font-weight="800" fill="#ffffff" letter-spacing="0.5">❌ STATUS QUO: When Running Multiple AI IDE Hosts Simultaneously</text>
+    <text x="436" y="29" font-size="10" fill="#fda4af">Primary model codes + secondary reviews: Intended to stop blind spots, but turns humans into clipboard couriers</text>
+
+    <!-- Pain 1 -->
+    <rect x="14" y="50" width="208" height="136" rx="6" fill="#1f121b" stroke="#881337" stroke-width="1.5"/>
+    <text x="24" y="72" font-size="11" font-weight="800" fill="#fb7185">1. Self-Review Echo Chamber</text>
+    <text x="24" y="93" font-size="9.5" fill="#e2e8f0">Asking the coding model to audit</text>
+    <text x="24" y="110" font-size="9.5" fill="#e2e8f0">its own code replicates blind spots</text>
+    <rect x="24" y="128" width="188" height="46" rx="4" fill="#0f070c" stroke="#4c0519" stroke-width="1"/>
+    <text x="32" y="146" font-size="9" fill="#fda4af">Requires distinct models &amp; hosts</text>
+    <text x="32" y="162" font-size="9" fill="#fda4af">to cross-examine from fresh eyes</text>
+
+    <!-- Pain 2 -->
+    <rect x="236" y="50" width="208" height="136" rx="6" fill="#1f121b" stroke="#881337" stroke-width="1.5"/>
+    <text x="246" y="72" font-size="11" font-weight="800" fill="#fb7185">2. Clipboard &amp; Token Burn</text>
+    <text x="246" y="93" font-size="9.5" fill="#e2e8f0">Copying hundreds of lines of code</text>
+    <text x="246" y="110" font-size="9.5" fill="#e2e8f0">burns duplicated context tokens</text>
+    <rect x="246" y="128" width="188" height="46" rx="4" fill="#0f070c" stroke="#4c0519" stroke-width="1"/>
+    <text x="254" y="146" font-size="9" fill="#fda4af">Long files get truncated mid-paste;</text>
+    <text x="254" y="162" font-size="9" fill="#fda4af">10+ window switches cause fatigue</text>
+
+    <!-- Pain 3 -->
+    <rect x="458" y="50" width="212" height="136" rx="6" fill="#1f121b" stroke="#881337" stroke-width="1.5"/>
+    <text x="468" y="72" font-size="11" font-weight="800" fill="#fb7185">3. Silent Blind Stale Audits</text>
+    <text x="468" y="93" font-size="9.5" fill="#e2e8f0">Host A edited code without saving,</text>
+    <text x="468" y="110" font-size="9.5" fill="#e2e8f0">or switched branches mid-flight</text>
+    <rect x="468" y="128" width="192" height="46" rx="4" fill="#0f070c" stroke="#4c0519" stroke-width="1"/>
+    <text x="476" y="146" font-size="9" fill="#fda4af">Host B reviews stale disk files,</text>
+    <text x="476" y="162" font-size="9" fill="#fda4af">generating plausible hallucinations</text>
+
+    <!-- Pain 4 -->
+    <rect x="684" y="50" width="206" height="136" rx="6" fill="#1f121b" stroke="#881337" stroke-width="1.5"/>
+    <text x="694" y="72" font-size="11" font-weight="800" fill="#fb7185">4. Prose Loops &amp; Disputes</text>
+    <text x="694" y="93" font-size="9.5" fill="#e2e8f0">Reviewer writes 2,000 words prose</text>
+    <text x="694" y="110" font-size="9.5" fill="#e2e8f0">without rigid pass/fail schema</text>
+    <rect x="694" y="128" width="186" height="46" rx="4" fill="#0f070c" stroke="#4c0519" stroke-width="1"/>
+    <text x="702" y="146" font-size="9" fill="#fda4af">Primary agent cannot parse directives,</text>
+    <text x="702" y="162" font-size="9" fill="#fda4af">triggering endless debate loops</text>
+  </g>
+
+  <!-- ================= LOWER HALF: WITH FERRYCAT (HONEST CONTRACT BUS) ================= -->
+  <g transform="translate(28, 310)">
+    <rect width="904" height="282" rx="8" fill="#0b1320" stroke="#06b6d4" stroke-width="2" filter="url(#neoShadow)"/>
+    <rect x="14" y="12" width="450" height="26" rx="4" fill="#0891b2"/>
+    <text x="24" y="29" font-size="11" font-weight="800" fill="#ffffff" letter-spacing="0.5">✅ FerryCat Workflow: Human Schedules, Contract Bus Enforces Determinism</text>
+    <text x="476" y="29" font-size="10" fill="#67e8f9">No fake background fantasies: 3 intentional window switches for 100% deterministic cross-host review</text>
+
+    <!-- Step 1: Window A -->
+    <rect x="16" y="52" width="256" height="148" rx="6" fill="#111827" stroke="#0284c7" stroke-width="1.5"/>
+    <rect x="26" y="62" width="200" height="20" rx="3" fill="#0369a1"/>
+    <text x="34" y="76" font-size="9.5" font-weight="700" fill="#e0f2fe">STEP 1 · Primary Coding Agent (Host A)</text>
+    <text x="26" y="100" font-size="10" font-weight="700" fill="#f8fafc">"Dispatch code review contract"</text>
+    <text x="26" y="120" font-size="9" fill="#cbd5e1">● File paths &amp; line bounds; zero raw code bloat</text>
+    <text x="26" y="138" font-size="9" fill="#cbd5e1">● Records full SHA-256 fingerprint baseline</text>
+    <text x="26" y="156" font-size="9" fill="#cbd5e1">● Checks head/tail lines for unsaved buffers</text>
+    <text x="26" y="176" font-size="9" fill="#38bdf8">● Attaches rigid JSON schema for delivery</text>
+
+    <!-- Arrow 1 -> Bus -->
+    <line x1="272" y1="126" x2="316" y2="126" stroke="#06b6d4" stroke-width="2.5" marker-end="url(#arrowCyan)"/>
+    <text x="276" y="116" font-size="9" font-weight="700" fill="#67e8f9">Dispatch</text>
+
+    <!-- Center: FerryCat Bus -->
+    <rect x="322" y="52" width="260" height="148" rx="6" fill="#06191d" stroke="#10b981" stroke-width="2"/>
+    <rect x="334" y="62" width="236" height="22" rx="3" fill="#047857"/>
+    <text x="348" y="77" font-size="10.5" font-weight="800" fill="#ecfdf5">FerryCat Mesh Bus (SQLite WAL)</text>
+    <text x="334" y="102" font-size="9" fill="#a7f3d0">🔒 Optimistic preemption: changes === 1 skips race</text>
+    <text x="334" y="122" font-size="9" fill="#a7f3d0">🛡️ TOCTOU protection: audits fingerprints twice</text>
+    <text x="348" y="138" font-size="8.5" fill="#6ee7b7">Soft-failure buffer catches mid-review file edits</text>
+    <text x="334" y="158" font-size="9" fill="#a7f3d0">📐 Schema validation: bounded retries (&le; 2)</text>
+    <text x="334" y="178" font-size="9" fill="#fde047">🚫 Security blacklist: blocks .env and key files</text>
+
+    <!-- Arrow Bus -> Step 2 -->
+    <line x1="582" y1="126" x2="626" y2="126" stroke="#10b981" stroke-width="2.5" marker-end="url(#arrowEmerald)"/>
+    <text x="590" y="116" font-size="9" font-weight="700" fill="#6ee7b7">Claim</text>
+
+    <!-- Step 2: Window B -->
+    <rect x="632" y="52" width="256" height="148" rx="6" fill="#111827" stroke="#10b981" stroke-width="1.5"/>
+    <rect x="642" y="62" width="210" height="20" rx="3" fill="#065f46"/>
+    <text x="650" y="76" font-size="9.5" font-weight="700" fill="#d1fae5">STEP 2 · Independent Reviewer (Host B)</text>
+    <text x="642" y="100" font-size="10" font-weight="700" fill="#f8fafc">"Claim pending task &amp; fulfill schema"</text>
+    <text x="642" y="120" font-size="9" fill="#cbd5e1">● Pre-flight verifies on-disk files match baseline</text>
+    <text x="642" y="138" font-size="9" fill="#cbd5e1">● Reads source directly on disk; zero paste loss</text>
+    <text x="642" y="156" font-size="9" fill="#cbd5e1">● Heterogeneous models (DeepSeek/Step-5/Hy3)</text>
+    <text x="642" y="176" font-size="9" fill="#34d399">● Fulfills structured JSON; Host A verifies easily</text>
+
+    <!-- Empirical Footer Bar -->
+    <rect x="16" y="212" width="872" height="56" rx="6" fill="#020617" stroke="#334155" stroke-width="1.5"/>
+    <text x="28" y="233" font-size="10" font-weight="800" fill="#fbbf24">📊 Real-World Verification Trajectory: FerryCat Auditing FerryCat Itself</text>
+    <text x="28" y="253" font-size="9" fill="#94a3b8">Dispatched 3 real contracts from Primary Coding Agent to Independent Reviewer across Deepseek-V4.1-Flash (241s), Step-5-Preview (354s), and Hy3 (463s), capturing &amp; fixing 9 real vulnerabilities.</text>
+  </g>
+</svg>
