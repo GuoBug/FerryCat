@@ -100,6 +100,7 @@ MCP 官方的 `Tasks` 规范（2025-11 / 2026-07）解决的是**单条 `Client 
 - **TOCTOU 软失败缓冲**：`fulfill_contract` 在交单时二次核验全文件指纹。若检测到脏指针：
   - **第 1 次超标（Strike 1）**：返回 `RETRY_NEEDED`，工单保持 `CLAIMED` 并自动续期执行窗口，返回脏文件清单与抢救指引（`git stash` / `git checkout -- <file>`）。
   - **第 2 次超标（Strike 2）**：流转至终态 `POINTER_STALE`，但将已提交的审查结果完整保存在 `salvaged_result_json`，确保长文本 Token 产出绝不因指针陈旧而白费。
+- **TOCTOU 竞态收窄**：任何基于文件系统的协作协议都无法从物理上完全消除磁盘读取与数据库行提交之间的微秒级理论时间差；FerryCat 通过领单（`poll`）与交单（`fulfill`）两阶段双重 SHA-256 复核，将传统长达数分钟的盲审窗口极限收窄至 SQL 原子事务提交前的微秒/纳秒级间隙。
 
 ### 3. 单方向交付与有界 Schema 重试 (`RETRY_NEEDED` $\le 2$)
 - 使用带缓存的 Ajv 校验器验证 `structured_output`，并将校验错误压平为单行路径列表（如 `["/passed: must be boolean"]`）。
@@ -112,6 +113,12 @@ MCP 官方的 `Tasks` 规范（2025-11 / 2026-07）解决的是**单条 `Client 
 
 ### 5. 双端纵深路径安全防线
 - 在派单（`dispatch`）与领单/交单（`worker`）两侧同时强制执行工作区目录包含校验（阻断 `..` 路径逃逸）与敏感文件黑名单拦截（`.env*`、`*.pem`、`*.key`、`id_rsa*`、`*credentials*`、`*secret*`、`.npmrc`、`.git/config`）。
+- **工作区路径解析**：建议显式传入 `workspace_root` 绝对路径。若传入相对路径，系统将自动基于当前工作目录（`process.cwd()`）通过 `path.resolve` 规范化为确定性绝对路径。
+
+### 6. 威胁模型与安全边界声明 (同机同用户受信 IPC)
+- **环境信任假设**：FerryCat 定位为**面向同机同操作系统用户的跨宿主 AI 开发者协作总线**。所有 IDE 宿主与 Worker 均运行在同一本地用户权限下，共享本地工作区（`workspace_root`）与本地 SQLite 文件（`~/.ferrycat/mesh.db`）。
+- **防护范畴**：双端路径防逃逸（`assertSafePointerPath`）与敏感文件模式黑名单旨在防范跨宿主误触敏感配置（如 `.env`、SSH 密钥）、软链接越界与无意识的目录逃逸。
+- **非防护目标**：FerryCat **不作为**面向不受信外部网络、多租户强隔离或恶意本地进程伪造 `AGENT_NAME` 的零信任安全网关。
 
 ---
 

@@ -38,8 +38,17 @@
 
 ---
 
-## Phase 2: 开发者体验与跨分支补丁支持 (规划中)
+## Phase 0.3.1: 安全严谨性热修复与租约隔离 (v0.3.1 — 规划中)
 
-- [ ] **FC-201（队头陈旧工单非阻塞跳过）**：当队列首条工单因文件变更被判定为 `POINTER_STALE` 时，支持在记录告警的同时继续扫描同批次后续有效工单，避免队头阻塞一轮轮询。
+- [ ] **FC-301（Lease Token 独占租约隔离）**：`contracts` 表新增 `claim_token` 列；`poll_next_task` 抢占成功时签发随机 UUID；`fulfill` / `release` / `extend` / `fail` 强制校验凭据，彻底杜绝同名 Worker 并发交叉操作。
+- [ ] **FC-302（Payload 尺寸与深度上限校验）**：对 `structured_output` 与 `contract_schema` 引入 1MB~2MB 序列化大小限制，防止 SQLite 单行数据膨胀。
+- [ ] **FC-303（CLI Worker 执行安全加固）**：以 `--exec-file`（无 Shell 注入风险）为主推执行方式，将 `--exec` 标记为显式 Shell 兼容模式。
+- [ ] **FC-304（文档与严谨性热修复）**：增补 Threat Model 章节、严谨化 TOCTOU 纳秒级收敛措辞、规范 `workspace_root` 相对/绝对路径说明。
+
+---
+
+## Phase 2: 开发者体验与跨分支补丁支持 (v0.4.0 — 规划中)
+
+- [ ] **FC-201（队头陈旧工单非阻塞跳过）**：当队列首条工单因文件变更被判定为 `POINTER_STALE` 时，支持在记录告警的同时继续扫描同批次后续有效工单，避免队头阻塞一轮轮询（v0.3.0 while 循环已打通主体逻辑，待收敛验收）。
 - [ ] **FC-202（可选 Git Patch 自包含载荷模式）**：针对两端处于不同 Git 分支的场景，支持可选携带轻量 `git diff` 切片，解除对同一磁盘工作树状态的强依赖。
 - [ ] **FC-203（异步非阻塞瞬态重试）**：将 `verifyFingerprintsWithRetry` 中的 `Atomics.wait(150ms)` 升级为异步 `await setTimeout`，避免瞬态复核期间阻塞 MCP 主线程。

@@ -38,8 +38,17 @@
 
 ---
 
-## Phase 2: Developer Ergonomics & Multi-Workspace Support (Planned)
+## Phase 0.3.1: Security Hygiene, Lease Isolation & Payload Limits (v0.3.1 — Planned)
 
-- [ ] **FC-201 (`POINTER_STALE` Queue Continuation)**: When the head-of-line contract fails fingerprint verification and transitions to `POINTER_STALE`, optionally continue scanning the remaining candidate contracts in the same `poll_next_task` call while surfacing the stale warning in metadata.
+- [ ] **FC-301 (Lease Token Isolation)**: Add `claim_token` column to `contracts`; issue unguessable UUID on successful `poll_next_task` preemption; require token verification in `fulfill` / `release` / `extend` / `fail` to prevent cross-worker interference among same-named agent instances.
+- [ ] **FC-302 (Bounded Payload & Schema Depth Limits)**: Add explicit serialization byte limits (1MB~2MB) on `structured_output` and `contract_schema` to protect shared SQLite database from unbounded bloating.
+- [ ] **FC-303 (CLI Worker Execution Hardening)**: Promote `--exec-file` (execFile without shell injection risks) as primary recommendation, and explicitly mark `--exec` as shell compatibility mode.
+- [ ] **FC-304 (Docs & Security Hygiene Hotfix)**: Publish Threat Model chapter, refine TOCTOU race window descriptions down to atomic SQL boundaries, and unify `workspace_root` relative/absolute resolution rules.
+
+---
+
+## Phase 2: Developer Ergonomics & Multi-Workspace Support (v0.4.0 — Planned)
+
+- [ ] **FC-201 (`POINTER_STALE` Queue Continuation)**: When the head-of-line contract fails fingerprint verification and transitions to `POINTER_STALE`, continue scanning the remaining candidate contracts in the same `poll_next_task` call while surfacing the stale warning in metadata (v0.3.0 while-loop continuous pagination implemented; final convergence verification pending).
 - [ ] **FC-202 (Self-Contained Git Patch Mode)**: Support optional inline `git diff` patch snapshots for cross-branch or disjoint workspace reviews where both hosts are not on the exact same working tree file state.
 - [ ] **FC-203 (Async Non-Blocking Transient Retry)**: Replace synchronous `Atomics.wait(150ms)` with async `setTimeout` promise delay in `pollNextTask` to avoid blocking the MCP stdio event loop during transient IDE save retries.

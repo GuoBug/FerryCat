@@ -100,6 +100,7 @@ Holder-side lifecycle controls on a `CLAIMED` contract (all require `agent_id ==
 - **TOCTOU Soft-Failure Buffering**: `fulfill_contract` checks on-disk pointer fingerprints. If dirty pointers are detected:
   - **Strike 1** returns `RETRY_NEEDED`, leaves the contract `CLAIMED`, renews the execution window, and lists dirty files with recovery instructions (`git stash` / `git checkout -- <file>`).
   - **Strike 2** transitions to terminal `POINTER_STALE` and saves the full submitted review payload into `salvaged_result_json` so review effort is never lost.
+- **TOCTOU Race Narrowing**: While no file-based system can eliminate the microsecond race between reading disk bytes and committing a database row, FerryCat's dual-verification (at `poll` and at `fulfill`) drastically narrows the TOCTOU window from minutes of blind review down to the sub-millisecond atomic SQL transition boundary.
 
 ### 3. Bounded Schema Validation (`RETRY_NEEDED` $\le 2$)
 - Outputs are validated against the contract's JSON Schema via cached Ajv validators, with errors flattened into concise single-line paths (e.g., `["/passed: must be boolean"]`).
@@ -112,6 +113,12 @@ Holder-side lifecycle controls on a `CLAIMED` contract (all require `agent_id ==
 
 ### 5. Defense-in-Depth Path Security
 - Enforces path containment within `workspace_root` and blocks sensitive file patterns (`.env*`, `*.pem`, `*.key`, `id_rsa*`, `*credentials*`, `*secret*`, `.npmrc`, `.git/config`) on both `dispatch` and `worker` verification paths.
+- **Path Resolution**: `workspace_root` is strongly recommended to be passed as an absolute path. If a relative path is provided, it is deterministically resolved against `process.cwd()` via `path.resolve`.
+
+### 6. Threat Model & Security Assumptions (Local Workstation IPC)
+- **Assumed Trust Environment**: FerryCat is intentionally designed as a **Trusted Local Workstation Bus** bridging isolated IDE hosts operating under the **same OS user account**. Callers and workers share the local file system (`workspace_root`) and SQLite database (`~/.ferrycat/mesh.db`).
+- **Defense Scope**: Path containment (`assertSafePointerPath`) and sensitive file pattern filters prevent unintentional workspace escapes, symlink traversals, or accidental leakage of credentials/secret files during handoffs.
+- **Out of Scope (Non-Goals)**: FerryCat does **not** provide adversarial sandboxing, multi-tenant isolation, or network authorization against malicious local processes or adversarial agents spoofing `AGENT_NAME`.
 
 ---
 
