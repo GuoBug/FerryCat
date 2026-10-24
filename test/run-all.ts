@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -217,11 +218,14 @@ async function test3_SchemaValidationRetryAndCircuitBreak(): Promise<void> {
     const claimed = engine.pollNextTask({ agent_id: 'workbuddy' });
     assert.equal(claimed.has_task, true);
     assert.equal(claimed.status, 'CLAIMED');
+    const claimToken = claimed.contract?.claim_token;
+    assert.ok(claimToken, 'claimed contract must issue a claim_token (FC-301)');
 
     // Attempt 1: Invalid structured_output (missing 'risks', wrong type for 'passed')
     const attempt1 = engine.fulfillContract({
       contract_id: dispatched.contract_id,
       agent_id: 'workbuddy',
+      claim_token: claimToken,
       result_summary: 'First attempt with bad schema',
       structured_output: { passed: 'yes' as unknown as boolean },
     });
@@ -235,6 +239,7 @@ async function test3_SchemaValidationRetryAndCircuitBreak(): Promise<void> {
     const attempt2 = engine.fulfillContract({
       contract_id: dispatched.contract_id,
       agent_id: 'workbuddy',
+      claim_token: claimToken,
       result_summary: 'Second attempt with bad schema',
       structured_output: { passed: true }, // still missing 'risks'
     });
@@ -247,6 +252,7 @@ async function test3_SchemaValidationRetryAndCircuitBreak(): Promise<void> {
     const attempt3 = engine.fulfillContract({
       contract_id: dispatched.contract_id,
       agent_id: 'workbuddy',
+      claim_token: claimToken,
       result_summary: 'Third attempt still broken',
       structured_output: { passed: true, risks: [123 as unknown as string] },
     });
@@ -344,6 +350,8 @@ async function test5_DualStageTtlAndHappyPath(): Promise<void> {
     const claimed = engine.pollNextTask({ agent_id: 'workbuddy' }, tClaim);
     assert.equal(claimed.has_task, true);
     assert.equal(claimed.status, 'CLAIMED');
+    const claimToken = claimed.contract?.claim_token;
+    assert.ok(claimToken, 'claimed contract must issue claim_token');
 
     // Fulfill at t0 + 1850s (past queue_ttl_sec, but only 60s into the 300s exec_ttl_sec window!)
     const tFulfill = t0 + 1850 * 1000;
@@ -351,6 +359,7 @@ async function test5_DualStageTtlAndHappyPath(): Promise<void> {
       {
         contract_id: dispatched.contract_id,
         agent_id: 'workbuddy',
+        claim_token: claimToken,
         result_summary: 'Audit passed cleanly.',
         structured_output: { passed: true, comment: 'LGTM' },
       },
@@ -378,6 +387,8 @@ async function test5_DualStageTtlAndHappyPath(): Promise<void> {
     );
     const cToctou = engine.pollNextTask({ agent_id: 'workbuddy' }, tFulfill + 1000);
     assert.equal(cToctou.has_task, true);
+    const toctouToken = cToctou.contract?.claim_token;
+    assert.ok(toctouToken, 'cToctou must issue claim_token');
 
     // Mutate file while claimed: Strike 1 triggers ADR-0004 soft-failure (RETRY_NEEDED), Strike 2 triggers terminal POINTER_STALE
     fs.writeFileSync(filePath, '// Mutated mid-review!\nexport const v = 2;\n', 'utf8');
@@ -385,6 +396,7 @@ async function test5_DualStageTtlAndHappyPath(): Promise<void> {
       {
         contract_id: dToctou.contract_id,
         agent_id: 'workbuddy',
+        claim_token: toctouToken,
         result_summary: 'First attempt while file is dirty',
       },
       tFulfill + 2000
@@ -401,6 +413,7 @@ async function test5_DualStageTtlAndHappyPath(): Promise<void> {
       {
         contract_id: dToctou.contract_id,
         agent_id: 'workbuddy',
+        claim_token: toctouToken,
         result_summary: 'Second attempt without restoring file',
       },
       tFulfill + 3000
@@ -636,6 +649,7 @@ async function test8_TrustBoundaryAndQueueUnblocking(): Promise<void> {
     const fulfillLegit = engine.fulfillContract({
       contract_id: authContract.contract_id,
       agent_id: 'agent-legit',
+      claim_token: pollLegit.contract?.claim_token,
       result_summary: 'Legit fulfill completed',
     });
     assert.strictEqual(fulfillLegit.ok, true);
@@ -849,19 +863,22 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
     const schema = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' } } };
     const relA = engine.dispatchContract({ ...base, target_agent: 'rel', title: 'A', contract_schema: schema }, t0);
     const relB = engine.dispatchContract({ ...base, target_agent: 'rel', title: 'B' }, t0 + 1);
-    assert.strictEqual(engine.pollNextTask({ agent_id: 'rel' }, t0 + S).contract?.contract_id, relA.contract_id);
+    const pollRelA = engine.pollNextTask({ agent_id: 'rel' }, t0 + S);
+    assert.strictEqual(pollRelA.contract?.contract_id, relA.contract_id);
+    const tokenRelA = pollRelA.contract?.claim_token;
+
     const badFulfill = engine.fulfillContract(
-      { contract_id: relA.contract_id, agent_id: 'rel', result_summary: 'bad', structured_output: { ok: 'no' } },
+      { contract_id: relA.contract_id, agent_id: 'rel', claim_token: tokenRelA, result_summary: 'bad', structured_output: { ok: 'no' } },
       t0 + 2 * S
     );
     assert.strictEqual(badFulfill.status, 'RETRY_NEEDED');
 
     assert.throws(
-      () => engine.releaseContract({ contract_id: relA.contract_id, agent_id: 'imposter' }, t0 + 3 * S),
+      () => engine.releaseContract({ contract_id: relA.contract_id, agent_id: 'imposter', claim_token: tokenRelA }, t0 + 3 * S),
       /Permission denied: .* but release was attempted by "imposter"/
     );
     const released = engine.releaseContract(
-      { contract_id: relA.contract_id, agent_id: 'rel', reason: 'missing local toolchain' },
+      { contract_id: relA.contract_id, agent_id: 'rel', claim_token: tokenRelA, reason: 'missing local toolchain' },
       t0 + 3 * S
     );
     assert.strictEqual(released.ok, true);
@@ -873,17 +890,19 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
     assert.strictEqual(afterRelease.claimed_at, null);
     assert.strictEqual(afterRelease.error_reason, 'RELEASED_BY_HOLDER: missing local toolchain');
     assert.throws(
-      () => engine.releaseContract({ contract_id: relA.contract_id, agent_id: 'rel' }, t0 + 4 * S),
+      () => engine.releaseContract({ contract_id: relA.contract_id, agent_id: 'rel', claim_token: tokenRelA }, t0 + 4 * S),
       /expected status 'CLAIMED', but current status is 'SUBMITTED'/
     );
 
     // Released contract goes to the tail: B (older queue position) is claimed first
     assert.strictEqual(engine.pollNextTask({ agent_id: 'rel' }, t0 + 5 * S).contract?.contract_id, relB.contract_id);
-    assert.strictEqual(engine.pollNextTask({ agent_id: 'rel' }, t0 + 6 * S).contract?.contract_id, relA.contract_id);
+    const pollRelA2 = engine.pollNextTask({ agent_id: 'rel' }, t0 + 6 * S);
+    assert.strictEqual(pollRelA2.contract?.contract_id, relA.contract_id);
+    const tokenRelA2 = pollRelA2.contract?.claim_token;
 
     // New holder continues from retry_count = 1; another failed attempt pushes it to 2 (circuit breaker quota preserved)
     const retryAfterRelease = engine.fulfillContract(
-      { contract_id: relA.contract_id, agent_id: 'rel', result_summary: 'bad', structured_output: { ok: 'no' } },
+      { contract_id: relA.contract_id, agent_id: 'rel', claim_token: tokenRelA2, result_summary: 'bad', structured_output: { ok: 'no' } },
       t0 + 7 * S
     );
     assert.strictEqual(retryAfterRelease.status, 'RETRY_NEEDED');
@@ -891,12 +910,15 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
 
     // Release cap: releases 2 and 3 succeed, 4th is refused and the contract stays CLAIMED
     let tRel = t0 + 10 * S;
+    let currToken = tokenRelA2;
     for (let n = 2; n <= 3; n++) {
-      assert.strictEqual(engine.releaseContract({ contract_id: relA.contract_id, agent_id: 'rel' }, tRel).release_count, n);
-      assert.strictEqual(engine.pollNextTask({ agent_id: 'rel' }, tRel + S).contract?.contract_id, relA.contract_id);
+      assert.strictEqual(engine.releaseContract({ contract_id: relA.contract_id, agent_id: 'rel', claim_token: currToken }, tRel).release_count, n);
+      const repoll = engine.pollNextTask({ agent_id: 'rel' }, tRel + S);
+      assert.strictEqual(repoll.contract?.contract_id, relA.contract_id);
+      currToken = repoll.contract?.claim_token;
       tRel += 2 * S;
     }
-    const capped = engine.releaseContract({ contract_id: relA.contract_id, agent_id: 'rel' }, tRel);
+    const capped = engine.releaseContract({ contract_id: relA.contract_id, agent_id: 'rel', claim_token: currToken }, tRel);
     assert.strictEqual(capped.ok, false);
     assert.strictEqual(capped.status, 'CLAIMED');
     assert.match(capped.message, /fail_contract/);
@@ -904,17 +926,17 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
 
     // Fresh queue window on release: original queue TTL (60s) passed, contract must not be swept
     const relC = engine.dispatchContract({ ...base, target_agent: 'rel-window', queue_ttl_sec: 60 }, t0);
-    engine.pollNextTask({ agent_id: 'rel-window' }, t0 + 50 * S);
-    engine.releaseContract({ contract_id: relC.contract_id, agent_id: 'rel-window' }, t0 + 70 * S);
+    const pRelC = engine.pollNextTask({ agent_id: 'rel-window' }, t0 + 50 * S);
+    engine.releaseContract({ contract_id: relC.contract_id, agent_id: 'rel-window', claim_token: pRelC.contract?.claim_token }, t0 + 70 * S);
     const reclaimed = engine.pollNextTask({ agent_id: 'rel-window' }, t0 + 100 * S);
     assert.strictEqual(reclaimed.contract?.contract_id, relC.contract_id, 'released contract needs a fresh queue window');
     console.log('  PASS [9B - Fresh Queue Window]: contract released after its original queue TTL was re-claimable.');
 
     // 9B-2: release rejected once beyond absolute lifetime cap
     const relCap = engine.dispatchContract({ ...base, target_agent: 'rel-cap', queue_ttl_sec: 60 }, t0);
-    engine.pollNextTask({ agent_id: 'rel-cap' }, t0 + 10 * S);
+    const pRelCap = engine.pollNextTask({ agent_id: 'rel-cap' }, t0 + 10 * S);
     // Lifetime cap is created_at + 4 * 60s = 240s
-    const relBeyondCap = engine.releaseContract({ contract_id: relCap.contract_id, agent_id: 'rel-cap' }, t0 + 241 * S);
+    const relBeyondCap = engine.releaseContract({ contract_id: relCap.contract_id, agent_id: 'rel-cap', claim_token: pRelCap.contract?.claim_token }, t0 + 241 * S);
     assert.strictEqual(relBeyondCap.ok, false);
     assert.strictEqual(relBeyondCap.status, 'TIMED_OUT');
     assert.strictEqual(engine.inspectMeshState({ contract_id: relCap.contract_id }).contracts[0].status, 'TIMED_OUT');
@@ -922,15 +944,16 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
 
     // 9C: extend_ttl restarts the window, capped at 5, must be called inside the window
     const ext = engine.dispatchContract({ ...base, target_agent: 'ext', exec_ttl_sec: 300 }, t0);
-    engine.pollNextTask({ agent_id: 'ext' }, t0);
+    const pExt = engine.pollNextTask({ agent_id: 'ext' }, t0);
+    const tokenExt = pExt.contract?.claim_token;
     assert.throws(
-      () => engine.extendTtl({ contract_id: ext.contract_id, agent_id: 'imposter' }, t0 + S),
+      () => engine.extendTtl({ contract_id: ext.contract_id, agent_id: 'imposter', claim_token: tokenExt }, t0 + S),
       /Permission denied: .* but extend was attempted by "imposter"/
     );
     let tExt = t0;
     for (let n = 1; n <= 5; n++) {
       tExt += 200 * S;
-      const extended = engine.extendTtl({ contract_id: ext.contract_id, agent_id: 'ext' }, tExt);
+      const extended = engine.extendTtl({ contract_id: ext.contract_id, agent_id: 'ext', claim_token: tokenExt }, tExt);
       assert.strictEqual(extended.ok, true);
       assert.strictEqual(extended.extend_count, n);
       assert.strictEqual(extended.expires_at, tExt + 300 * S);
@@ -939,10 +962,10 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
     const aliveState = engine.inspectMeshState({ contract_id: ext.contract_id }, tExt + 100 * S).contracts[0];
     assert.strictEqual(aliveState.is_logically_expired, false);
     assert.strictEqual(aliveState.extend_count, 5);
-    const overLimit = engine.extendTtl({ contract_id: ext.contract_id, agent_id: 'ext' }, tExt + 100 * S);
+    const overLimit = engine.extendTtl({ contract_id: ext.contract_id, agent_id: 'ext', claim_token: tokenExt }, tExt + 100 * S);
     assert.strictEqual(overLimit.ok, false);
     assert.strictEqual(overLimit.status, 'CLAIMED');
-    const tooLate = engine.extendTtl({ contract_id: ext.contract_id, agent_id: 'ext' }, tExt + 301 * S);
+    const tooLate = engine.extendTtl({ contract_id: ext.contract_id, agent_id: 'ext', claim_token: tokenExt }, tExt + 301 * S);
     assert.strictEqual(tooLate.status, 'TIMED_OUT');
     assert.strictEqual(engine.inspectMeshState({ contract_id: ext.contract_id }).contracts[0].status, 'TIMED_OUT');
 
@@ -950,16 +973,16 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
     // For queue_ttl_sec = 60, exec_ttl_sec = 300: lifetime deadline is t0 + 240s.
     // At t0 + 10s: claimed. At t0 + 20s: renewing would produce expires_at = 20s + 300s = 320s > 240s, so it must be refused!
     const capC = engine.dispatchContract({ ...base, target_agent: 'ext-cap', queue_ttl_sec: 60, exec_ttl_sec: 300 }, t0);
-    engine.pollNextTask({ agent_id: 'ext-cap' }, t0 + 10 * S);
-    const proposedExceedsCap = engine.extendTtl({ contract_id: capC.contract_id, agent_id: 'ext-cap' }, t0 + 20 * S);
+    const pCapC = engine.pollNextTask({ agent_id: 'ext-cap' }, t0 + 10 * S);
+    const proposedExceedsCap = engine.extendTtl({ contract_id: capC.contract_id, agent_id: 'ext-cap', claim_token: pCapC.contract?.claim_token }, t0 + 20 * S);
     assert.strictEqual(proposedExceedsCap.ok, false, 'renewal that would push window past lifetime deadline must be refused');
     assert.match(proposedExceedsCap.message, /exceeding the absolute lifetime cap/);
 
     // Now test with larger queue_ttl_sec = 600, exec_ttl_sec = 100: deadline is t0 + 2400s.
     // At t0 + 50s: renewing pushes to 50s + 100s = 150s <= 2400s, so it succeeds.
     const capOk = engine.dispatchContract({ ...base, target_agent: 'ext-ok', queue_ttl_sec: 600, exec_ttl_sec: 100 }, t0);
-    engine.pollNextTask({ agent_id: 'ext-ok' }, t0 + 10 * S);
-    const extendWithinLifetime = engine.extendTtl({ contract_id: capOk.contract_id, agent_id: 'ext-ok' }, t0 + 50 * S);
+    const pCapOk = engine.pollNextTask({ agent_id: 'ext-ok' }, t0 + 10 * S);
+    const extendWithinLifetime = engine.extendTtl({ contract_id: capOk.contract_id, agent_id: 'ext-ok', claim_token: pCapOk.contract?.claim_token }, t0 + 50 * S);
     assert.strictEqual(extendWithinLifetime.ok, true);
     assert.ok(extendWithinLifetime.expires_at! <= t0 + 2400 * S, 'expires_at must be strictly within lifetime cap');
 
@@ -967,17 +990,18 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
 
     // 9D: fail_contract -> terminal FAILED with reason; late report -> TIMED_OUT with reason preserved
     const fl = engine.dispatchContract({ ...base, target_agent: 'fl', exec_ttl_sec: 300 }, t0);
-    engine.pollNextTask({ agent_id: 'fl' }, t0);
+    const pFl = engine.pollNextTask({ agent_id: 'fl' }, t0);
+    const tokenFl = pFl.contract?.claim_token;
     assert.throws(
-      () => engine.failContract({ contract_id: fl.contract_id, agent_id: 'imposter', reason: 'x' }, t0 + S),
+      () => engine.failContract({ contract_id: fl.contract_id, agent_id: 'imposter', claim_token: tokenFl, reason: 'x' }, t0 + S),
       /Permission denied: .* but fail was attempted by "imposter"/
     );
     assert.throws(
-      () => engine.failContract({ contract_id: fl.contract_id, agent_id: 'fl', reason: '   ' }, t0 + S),
+      () => engine.failContract({ contract_id: fl.contract_id, agent_id: 'fl', claim_token: tokenFl, reason: '   ' }, t0 + S),
       /reason must not be empty/
     );
     const failed = engine.failContract(
-      { contract_id: fl.contract_id, agent_id: 'fl', reason: 'Compiler not installed' },
+      { contract_id: fl.contract_id, agent_id: 'fl', claim_token: tokenFl, reason: 'Compiler not installed' },
       t0 + 2 * S
     );
     assert.strictEqual(failed.ok, true);
@@ -987,13 +1011,13 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
     assert.strictEqual(failedState[0].error_reason, 'WORKER_FAILED: Compiler not installed');
     assert.strictEqual(failedState[0].completed_at, t0 + 2 * S);
     assert.throws(
-      () => engine.failContract({ contract_id: fl.contract_id, agent_id: 'fl', reason: 'again' }, t0 + 3 * S),
+      () => engine.failContract({ contract_id: fl.contract_id, agent_id: 'fl', claim_token: tokenFl, reason: 'again' }, t0 + 3 * S),
       /current status is 'FAILED'/
     );
 
     const flLate = engine.dispatchContract({ ...base, target_agent: 'fl-late', exec_ttl_sec: 300 }, t0);
-    engine.pollNextTask({ agent_id: 'fl-late' }, t0);
-    const late = engine.failContract({ contract_id: flLate.contract_id, agent_id: 'fl-late', reason: 'gave up' }, t0 + 400 * S);
+    const pFlLate = engine.pollNextTask({ agent_id: 'fl-late' }, t0);
+    const late = engine.failContract({ contract_id: flLate.contract_id, agent_id: 'fl-late', claim_token: pFlLate.contract?.claim_token, reason: 'gave up' }, t0 + 400 * S);
     assert.strictEqual(late.status, 'TIMED_OUT');
     assert.strictEqual(
       engine.inspectMeshState({ contract_id: flLate.contract_id }).contracts[0].error_reason,
@@ -1003,14 +1027,15 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
 
     // 9E: RETRY_NEEDED renews the execution window
     const rn = engine.dispatchContract({ ...base, target_agent: 'rn', exec_ttl_sec: 300, contract_schema: schema }, t0);
-    engine.pollNextTask({ agent_id: 'rn' }, t0);
+    const pRn = engine.pollNextTask({ agent_id: 'rn' }, t0);
+    const tokenRn = pRn.contract?.claim_token;
     const rnRetry = engine.fulfillContract(
-      { contract_id: rn.contract_id, agent_id: 'rn', result_summary: 'bad', structured_output: {} },
+      { contract_id: rn.contract_id, agent_id: 'rn', claim_token: tokenRn, result_summary: 'bad', structured_output: {} },
       t0 + 250 * S
     );
     assert.strictEqual(rnRetry.status, 'RETRY_NEEDED');
     const rnDone = engine.fulfillContract(
-      { contract_id: rn.contract_id, agent_id: 'rn', result_summary: 'fixed', structured_output: { ok: true } },
+      { contract_id: rn.contract_id, agent_id: 'rn', claim_token: tokenRn, result_summary: 'fixed', structured_output: { ok: true } },
       t0 + 500 * S
     );
     assert.strictEqual(rnDone.status, 'COMPLETED', 'fix attempt after RETRY_NEEDED must get a renewed window');
@@ -1051,7 +1076,11 @@ async function test10_LegacySchemaMigrationAndCliLifecycle(): Promise<void> {
     const migrated = new FerryCatEngine({ dbPath });
     const legacyPoll = migrated.pollNextTask({ agent_id: 'legacy-worker' });
     assert.strictEqual(legacyPoll.contract?.contract_id, legacy.contract_id, 'legacy row (queued_at NULL) must be claimable');
-    const legacyExt = migrated.extendTtl({ contract_id: legacy.contract_id, agent_id: 'legacy-worker' });
+    const legacyExt = migrated.extendTtl({
+      contract_id: legacy.contract_id,
+      agent_id: 'legacy-worker',
+      claim_token: legacyPoll.contract?.claim_token,
+    });
     assert.strictEqual(legacyExt.ok, true);
     assert.strictEqual(legacyExt.extend_count, 1);
     migrated.close();
@@ -1071,20 +1100,22 @@ async function test10_LegacySchemaMigrationAndCliLifecycle(): Promise<void> {
 
     const engine = new FerryCatEngine({ dbPath });
     const cliC = engine.dispatchContract({ ...base, target_agent: 'cli-life' });
-    engine.pollNextTask({ agent_id: 'cli-life' });
+    const pLife1 = engine.pollNextTask({ agent_id: 'cli-life' });
+    const tokenLife1 = pLife1.contract!.claim_token!;
 
-    const resExtend = await execCli(['extend', '--agent', 'cli-life', '--id', cliC.contract_id]);
+    const resExtend = await execCli(['extend', '--agent', 'cli-life', '--id', cliC.contract_id, '--token', tokenLife1]);
     assert.strictEqual(resExtend.code, 0, resExtend.stderr);
     assert.strictEqual(JSON.parse(resExtend.stdout).extend_count, 1);
 
-    const resRelease = await execCli(['release', '--agent', 'cli-life', '--id', cliC.contract_id, '--reason', 'wrong branch']);
+    const resRelease = await execCli(['release', '--agent', 'cli-life', '--id', cliC.contract_id, '--token', tokenLife1, '--reason', 'wrong branch']);
     assert.strictEqual(resRelease.code, 0, resRelease.stderr);
     assert.strictEqual(JSON.parse(resRelease.stdout).status, 'SUBMITTED');
 
-    engine.pollNextTask({ agent_id: 'cli-life' });
-    const resFailNoReason = await execCli(['fail', '--agent', 'cli-life', '--id', cliC.contract_id]);
+    const pLife2 = engine.pollNextTask({ agent_id: 'cli-life' });
+    const tokenLife2 = pLife2.contract!.claim_token!;
+    const resFailNoReason = await execCli(['fail', '--agent', 'cli-life', '--id', cliC.contract_id, '--token', tokenLife2]);
     assert.notStrictEqual(resFailNoReason.code, 0, 'fail without --reason must be rejected');
-    const resFail = await execCli(['fail', '--agent', 'cli-life', '--id', cliC.contract_id, '--reason', 'cannot reproduce']);
+    const resFail = await execCli(['fail', '--agent', 'cli-life', '--id', cliC.contract_id, '--token', tokenLife2, '--reason', 'cannot reproduce']);
     assert.strictEqual(resFail.code, 0, resFail.stderr);
     assert.strictEqual(JSON.parse(resFail.stdout).status, 'FAILED');
     console.log('  PASS [10B - CLI Lifecycle]: extend -> release -> re-claim -> fail via ferrycat-cli subcommands.');
@@ -1134,6 +1165,7 @@ async function test11_PhaseBCliErgonomicsAndToctouBuffer(): Promise<void> {
 
     const pRecover = engine.pollNextTask({ agent_id: 'workbuddy' }, 1000);
     assert.strictEqual(pRecover.has_task, true);
+    const tokenRecover = pRecover.contract?.claim_token;
 
     // Pre-flight check when clean
     const vClean = engine.verifyContract({ contract_id: cRecover.contract_id, agent_id: 'workbuddy' });
@@ -1164,6 +1196,7 @@ async function test11_PhaseBCliErgonomicsAndToctouBuffer(): Promise<void> {
       {
         contract_id: cRecover.contract_id,
         agent_id: 'workbuddy',
+        claim_token: tokenRecover,
         result_summary: 'Detailed review report (10k tokens)',
       },
       2000
@@ -1190,6 +1223,7 @@ async function test11_PhaseBCliErgonomicsAndToctouBuffer(): Promise<void> {
       {
         contract_id: cRecover.contract_id,
         agent_id: 'workbuddy',
+        claim_token: tokenRecover,
         result_summary: 'Detailed review report (10k tokens)',
       },
       2500
@@ -1213,10 +1247,10 @@ async function test11_PhaseBCliErgonomicsAndToctouBuffer(): Promise<void> {
       workspace_root: dir,
       pointers: [{ path: 'file-a.ts' }],
     });
-    engine.pollNextTask({ agent_id: 'workbuddy' });
-    engine.releaseContract({ contract_id: cSalvage.contract_id, agent_id: 'workbuddy', reason: 'first release' });
-    engine.pollNextTask({ agent_id: 'workbuddy' });
-    engine.releaseContract({ contract_id: cSalvage.contract_id, agent_id: 'workbuddy', reason: 'second release' });
+    const pSalv1 = engine.pollNextTask({ agent_id: 'workbuddy' });
+    engine.releaseContract({ contract_id: cSalvage.contract_id, agent_id: 'workbuddy', claim_token: pSalv1.contract?.claim_token, reason: 'first release' });
+    const pSalv2 = engine.pollNextTask({ agent_id: 'workbuddy' });
+    engine.releaseContract({ contract_id: cSalvage.contract_id, agent_id: 'workbuddy', claim_token: pSalv2.contract?.claim_token, reason: 'second release' });
 
     const afterReleases = engine.inspectMeshState({ contract_id: cSalvage.contract_id }).contracts[0];
     assert.strictEqual(afterReleases.toctou_strike, 0, 'releaseContract must reset toctou_strike to 0');
@@ -1225,11 +1259,13 @@ async function test11_PhaseBCliErgonomicsAndToctouBuffer(): Promise<void> {
       `Expected preserved release history, got: ${afterReleases.error_reason}`
     );
 
-    engine.pollNextTask({ agent_id: 'workbuddy' });
+    const pSalv3 = engine.pollNextTask({ agent_id: 'workbuddy' });
+    const tokenSalv3 = pSalv3.contract?.claim_token;
     fs.writeFileSync(fileA, 'export const a = 777; // dirty again\n', 'utf8');
     const s1 = engine.fulfillContract({
       contract_id: cSalvage.contract_id,
       agent_id: 'workbuddy',
+      claim_token: tokenSalv3,
       result_summary: 'Valuable audit report Strike 1',
     });
     assert.strictEqual(s1.status, 'RETRY_NEEDED');
@@ -1237,6 +1273,7 @@ async function test11_PhaseBCliErgonomicsAndToctouBuffer(): Promise<void> {
     const s2 = engine.fulfillContract({
       contract_id: cSalvage.contract_id,
       agent_id: 'workbuddy',
+      claim_token: tokenSalv3,
       result_summary: 'Valuable audit report Strike 2 (must be salvaged)',
       structured_output: { issues: ['P1-A', 'P2-B'] },
     });
@@ -1275,7 +1312,7 @@ async function test11_PhaseBCliErgonomicsAndToctouBuffer(): Promise<void> {
 
     const helpGlobal = await runCli(['--help']);
     assert.strictEqual(helpGlobal.code, 0);
-    assert.ok(helpGlobal.stdout.includes('FerryCat CLI v0.3.0'));
+    assert.ok(helpGlobal.stdout.includes('FerryCat CLI v0.3.1'));
 
     const helpFulfill = await runCli(['help', 'fulfill']);
     assert.strictEqual(helpFulfill.code, 0);
@@ -1283,7 +1320,7 @@ async function test11_PhaseBCliErgonomicsAndToctouBuffer(): Promise<void> {
 
     const verRes = await runCli(['--version']);
     assert.strictEqual(verRes.code, 0);
-    assert.strictEqual(verRes.stdout.trim(), '0.3.0');
+    assert.strictEqual(verRes.stdout.trim(), '0.3.1');
 
     // Stdin dispatch with UTF-8 BOM (\uFEFF) via --file -
     const stdinDispatchPayload =
@@ -1309,12 +1346,15 @@ async function test11_PhaseBCliErgonomicsAndToctouBuffer(): Promise<void> {
     // worker --mode=claim
     const resClaimMode = await runCli(['worker', '--agent', 'stdin-worker', '--mode=claim']);
     assert.strictEqual(resClaimMode.code, 0, resClaimMode.stderr);
-    assert.strictEqual(JSON.parse(resClaimMode.stdout).mode, 'CLAIM_ONLY');
+    const parsedClaim = JSON.parse(resClaimMode.stdout);
+    assert.strictEqual(parsedClaim.mode, 'CLAIM_ONLY');
+    const stdinToken = parsedClaim.contract?.claim_token;
+    assert.ok(stdinToken, 'worker --mode=claim must return claim_token');
 
     // P2-1: Positional JSON + explicit --agent flag coexistence on fulfill
     const resPositionalPlusFlag = await runCli([
       'fulfill',
-      JSON.stringify({ contract_id: stdinContractId, result_summary: 'Fulfilled with positional JSON + --agent flag' }),
+      JSON.stringify({ contract_id: stdinContractId, result_summary: 'Fulfilled with positional JSON + --agent flag', claim_token: stdinToken }),
       '--agent',
       'stdin-worker',
     ]);
@@ -1455,6 +1495,220 @@ async function test11_PhaseBCliErgonomicsAndToctouBuffer(): Promise<void> {
   }
 }
 
+async function test12_Phase031_LeaseTokensAndPayloadLimits(): Promise<void> {
+  console.log('\n[Test 12] Phase 0.3.1: Lease Token (claim_token) Concurrency Guard & Payload Limits');
+  const { dir, dbPath, cleanup } = createTempWorkspace('phase-031');
+
+  try {
+    const fileA = path.join(dir, 'code.ts');
+    fs.writeFileSync(fileA, 'export const x = 100;\n', 'utf8');
+
+    const engine = new FerryCatEngine({ dbPath, defaultAgentName: 'antigravity', fingerprintRetryDelayMs: 5 });
+
+    // 12A: Claim generates valid UUID claim_token & stores in DB
+    const c1 = engine.dispatchContract({
+      target_agent: 'multi-worker',
+      task_type: 'code_review',
+      title: 'Lease Token Check',
+      context_summary: 'Verify claim_token generation',
+      workspace_root: dir,
+      pointers: [{ path: 'code.ts' }],
+    });
+
+    const p1 = engine.pollNextTask({ agent_id: 'multi-worker' });
+    assert.strictEqual(p1.has_task, true);
+    assert.strictEqual(p1.status, 'CLAIMED');
+    const token1 = p1.contract?.claim_token;
+    assert.ok(token1, 'Claimed contract must have claim_token');
+    assert.match(
+      token1!,
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+      'claim_token must be a valid UUID'
+    );
+    console.log(`  PASS [12A - UUID Lease Token]: Generated claim_token: ${token1}`);
+
+    // 12B: Same-named concurrent worker without token or with wrong token is blocked
+    assert.throws(
+      () => {
+        engine.fulfillContract({
+          contract_id: c1.contract_id,
+          agent_id: 'multi-worker', // same agent!
+          result_summary: 'Rogue worker attempt without token',
+        });
+      },
+      /protected by an exclusive lease token \(claim_token\), but none was provided/i,
+      'Must reject fulfill when claim_token is missing'
+    );
+
+    assert.throws(
+      () => {
+        engine.fulfillContract({
+          contract_id: c1.contract_id,
+          agent_id: 'multi-worker', // same agent!
+          claim_token: 'bogus-token-12345',
+          result_summary: 'Rogue worker attempt with wrong token',
+        });
+      },
+      /invalid lease token \(claim_token\) provided for fulfill/i,
+      'Must reject fulfill when claim_token is wrong'
+    );
+
+    // Legitimate fulfill with matching token succeeds
+    const fulfillOk = engine.fulfillContract({
+      contract_id: c1.contract_id,
+      agent_id: 'multi-worker',
+      claim_token: token1,
+      result_summary: 'Legit worker fulfill with matching token',
+    });
+    assert.strictEqual(fulfillOk.ok, true);
+    assert.strictEqual(fulfillOk.status, 'COMPLETED');
+    console.log('  PASS [12B - Same-Agent Isolation]: Missing & mismatched tokens rejected; matching token succeeded.');
+
+    // 12C: releaseContract resets claim_token to NULL; next claim gets a new distinct UUID
+    const c2 = engine.dispatchContract({
+      target_agent: 'recycle-worker',
+      task_type: 'code_review',
+      title: 'Release Token Reset Check',
+      context_summary: 'Verify token reset on release',
+      workspace_root: dir,
+      pointers: [{ path: 'code.ts' }],
+    });
+
+    const pRecycle1 = engine.pollNextTask({ agent_id: 'recycle-worker' });
+    const tokenRecycle1 = pRecycle1.contract?.claim_token;
+    assert.ok(tokenRecycle1);
+
+    // Release with token succeeds
+    const relRes = engine.releaseContract({
+      contract_id: c2.contract_id,
+      agent_id: 'recycle-worker',
+      claim_token: tokenRecycle1,
+      reason: 'handing back to queue',
+    });
+    assert.strictEqual(relRes.ok, true);
+    assert.strictEqual(relRes.status, 'SUBMITTED');
+
+    // Re-claim gets a fresh, distinct token
+    const pRecycle2 = engine.pollNextTask({ agent_id: 'recycle-worker' });
+    const tokenRecycle2 = pRecycle2.contract?.claim_token;
+    assert.ok(tokenRecycle2);
+    assert.notStrictEqual(tokenRecycle1, tokenRecycle2, 'New claim must issue a fresh distinct token');
+    console.log('  PASS [12C - Release Token Refresh]: Release cleared token, re-claim issued fresh distinct UUID.');
+
+    // 12D: extend_ttl and fail_contract lease enforcement
+    assert.throws(
+      () => engine.extendTtl({ contract_id: c2.contract_id, agent_id: 'recycle-worker', claim_token: 'bad-token' }),
+      /invalid lease token/i
+    );
+    const extendOk = engine.extendTtl({ contract_id: c2.contract_id, agent_id: 'recycle-worker', claim_token: tokenRecycle2 });
+    assert.strictEqual(extendOk.ok, true);
+
+    assert.throws(
+      () => engine.failContract({ contract_id: c2.contract_id, agent_id: 'recycle-worker', claim_token: 'bad-token', reason: 'fail test' }),
+      /invalid lease token/i
+    );
+    const failOk = engine.failContract({ contract_id: c2.contract_id, agent_id: 'recycle-worker', claim_token: tokenRecycle2, reason: 'confirmed failure' });
+    assert.strictEqual(failOk.status, 'FAILED');
+    console.log('  PASS [12D - Extend & Fail Lease Guard]: extend and fail enforce exclusive lease tokens.');
+
+    // 12E: Payload limit enforcement (FC-302)
+    const oversizedString = 'x'.repeat(1.2 * 1024 * 1024); // 1.2MB string
+    assert.throws(
+      () => {
+        engine.dispatchContract({
+          target_agent: 'multi-worker',
+          task_type: 'code_review',
+          title: 'Oversized Schema Test',
+          context_summary: 'Testing 1MB limit',
+          workspace_root: dir,
+          pointers: [{ path: 'code.ts' }],
+          contract_schema: { big: oversizedString },
+        });
+      },
+      /exceeds maximum allowed limit of 1048576 bytes/i,
+      'Dispatch must reject schemas exceeding 1MB'
+    );
+
+    // Deep nesting > 32 levels test
+    let deepObj: Record<string, unknown> = { level: 0 };
+    let cur = deepObj;
+    for (let i = 1; i <= 35; i++) {
+      const next: Record<string, unknown> = { level: i };
+      cur.child = next;
+      cur = next;
+    }
+    assert.throws(
+      () => {
+        engine.dispatchContract({
+          target_agent: 'multi-worker',
+          task_type: 'code_review',
+          title: 'Deep Nesting Test',
+          context_summary: 'Testing 32 depth limit',
+          workspace_root: dir,
+          pointers: [{ path: 'code.ts' }],
+          contract_schema: deepObj,
+        });
+      },
+      /exceeds maximum allowed depth of 32/i,
+      'Dispatch must reject schemas deeper than 32 levels'
+    );
+    console.log('  PASS [12E - Payload Limit & Depth Guard]: 1.2MB payload and 35-level deep object rejected.');
+
+    // 12F: Legacy DB row backward compatibility (NULL claim_token operates without token)
+    const { DatabaseSync } = await import('node:sqlite');
+    const raw = new DatabaseSync(dbPath);
+    const legacyId = 'fc_legacy_null_token';
+    const codeBuf = fs.readFileSync(fileA);
+    const codeSha = crypto.createHash('sha256').update(codeBuf).digest('hex');
+    const pointersJson = JSON.stringify([
+      {
+        path: 'code.ts',
+        size: codeBuf.length,
+        mtime_ms: Date.now(),
+        sha256: codeSha,
+        first_line: 'export',
+        last_line: ';\n',
+      },
+    ]);
+    raw
+      .prepare(
+        `INSERT INTO contracts (
+          id, requester_agent, target_agent, task_type, title, context_summary,
+          workspace_root, pointers_json, status, created_at, queued_at, claimed_at,
+          claim_token, queue_ttl_sec, exec_ttl_sec
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CLAIMED', ?, ?, ?, NULL, 1800, 300)`
+      )
+      .run(
+        legacyId,
+        'gui',
+        'legacy-agent',
+        'code_review',
+        'Legacy NULL token',
+        'Summary',
+        dir,
+        pointersJson,
+        Date.now(),
+        Date.now(),
+        Date.now()
+      );
+    raw.close();
+
+    const legacyFulfill = engine.fulfillContract({
+      contract_id: legacyId,
+      agent_id: 'legacy-agent',
+      // No claim_token provided!
+      result_summary: 'Legacy row completed without token',
+    });
+    assert.strictEqual(legacyFulfill.ok, true);
+    assert.strictEqual(legacyFulfill.status, 'COMPLETED');
+    console.log('  PASS [12F - Legacy Backward Compatibility]: Row with NULL claim_token operable without token.');
+
+    engine.close();
+  } finally {
+    cleanup();
+  }
+}
+
 async function main(): Promise<void> {
   console.log('==============================================================');
   console.log(' FerryCat Offline Verification Suite (Node ' + process.version + ')');
@@ -1471,9 +1725,10 @@ async function main(): Promise<void> {
   await test9_LifecycleReleaseExtendFail();
   await test10_LegacySchemaMigrationAndCliLifecycle();
   await test11_PhaseBCliErgonomicsAndToctouBuffer();
+  await test12_Phase031_LeaseTokensAndPayloadLimits();
 
   console.log('\n==============================================================');
-  console.log(' ALL 11 TEST SUITES PASSED GREEN');
+  console.log(' ALL 12 TEST SUITES PASSED GREEN');
   console.log('==============================================================');
 }
 

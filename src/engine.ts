@@ -9,6 +9,7 @@ import {
   verifyFingerprintsWithRetry,
 } from './fingerprint.js';
 import { validateContractOutput } from './schema-validator.js';
+import { validateJsonPayload } from './schemas.js';
 import type {
   ContractRow,
   DispatchContractInput,
@@ -102,6 +103,7 @@ export interface FerryCatEngineOptions {
   dbPath?: string;
   defaultAgentName?: string;
   fingerprintRetryDelayMs?: number;
+  strictLeaseTokens?: boolean;
 }
 
 export class FerryCatEngine {
@@ -109,12 +111,14 @@ export class FerryCatEngine {
   private readonly db: DatabaseSync;
   private readonly defaultAgentName?: string;
   private readonly fingerprintRetryDelayMs: number;
+  public readonly strictLeaseTokens: boolean;
 
   constructor(options: FerryCatEngineOptions = {}) {
     this.assertNodeVersion();
     this.dbPath = resolveDbPath(options.dbPath);
     this.defaultAgentName = options.defaultAgentName ?? process.env.AGENT_NAME;
     this.fingerprintRetryDelayMs = options.fingerprintRetryDelayMs ?? 150;
+    this.strictLeaseTokens = options.strictLeaseTokens ?? true;
 
     const dir = path.dirname(this.dbPath);
     if (!fs.existsSync(dir)) {
@@ -167,7 +171,8 @@ export class FerryCatEngine {
         extend_count INTEGER NOT NULL DEFAULT 0,
         release_count INTEGER NOT NULL DEFAULT 0,
         toctou_strike INTEGER NOT NULL DEFAULT 0,
-        salvaged_result_json TEXT
+        salvaged_result_json TEXT,
+        claim_token TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_contracts_poll
@@ -183,6 +188,7 @@ export class FerryCatEngine {
       ['release_count', 'INTEGER NOT NULL DEFAULT 0'],
       ['toctou_strike', 'INTEGER NOT NULL DEFAULT 0'],
       ['salvaged_result_json', 'TEXT'],
+      ['claim_token', 'TEXT'],
     ];
     const existingColumns = new Set(
       (this.db.prepare('PRAGMA table_info(contracts)').all() as Array<{ name: string }>).map(
@@ -226,6 +232,13 @@ export class FerryCatEngine {
     }
     if (!input.pointers || input.pointers.length === 0) {
       throw new Error('pointers must contain at least one file pointer.');
+    }
+
+    if (input.contract_schema) {
+      const payloadCheck = validateJsonPayload(input.contract_schema);
+      if (!payloadCheck.valid) {
+        throw new Error(`contract_schema validation failed: ${payloadCheck.error}`);
+      }
     }
 
     const resolvedWorkspace = path.resolve(expandTilde(input.workspace_root));
@@ -328,7 +341,7 @@ export class FerryCatEngine {
     // Step 2: Fetch and evaluate candidate SUBMITTED contracts with continuous pagination
     const claimStmt = this.db.prepare(
       `UPDATE contracts
-       SET status = 'CLAIMED', claimed_at = ?
+       SET status = 'CLAIMED', claimed_at = ?, claim_token = ?
        WHERE id = ? AND status = 'SUBMITTED'`
     );
 
@@ -350,8 +363,9 @@ export class FerryCatEngine {
       anyCandidatesSeen = true;
 
       for (const candidate of candidates) {
-        // Step 3: Atomic optimistic lock preemption
-        const updateResult = claimStmt.run(nowMs, candidate.id);
+        // Step 3: Atomic optimistic lock preemption with unique lease token (FC-301)
+        const claimToken = crypto.randomUUID();
+        const updateResult = claimStmt.run(nowMs, claimToken, candidate.id);
         if (Number(updateResult.changes) !== 1) {
           // Preempted by another concurrent worker process; try next candidate
           continue;
@@ -417,6 +431,7 @@ export class FerryCatEngine {
               : null,
             claimed_at: nowMs,
             exec_ttl_sec: candidate.exec_ttl_sec,
+            claim_token: claimToken,
           },
         };
       }
@@ -443,7 +458,19 @@ export class FerryCatEngine {
     nowMs: number = Date.now()
   ): FulfillContractResult {
     const agentId = this.resolveAgentIdentity(input.agent_id, 'agent_id');
-    const row = this.loadClaimedContractForHolder(input.contract_id, agentId, 'fulfill');
+    const row = this.loadClaimedContractForHolder(
+      input.contract_id,
+      agentId,
+      'fulfill',
+      input.claim_token
+    );
+
+    if (input.structured_output) {
+      const payloadCheck = validateJsonPayload(input.structured_output);
+      if (!payloadCheck.valid) {
+        throw new Error(`structured_output validation failed: ${payloadCheck.error}`);
+      }
+    }
 
     // Check execution TTL
     if (this.expireIfExecTtlElapsed(row, nowMs)) {
@@ -614,12 +641,14 @@ export class FerryCatEngine {
 
   /**
    * Shared holder guard for every CLAIMED-state mutation (fulfill / release / extend / fail):
-   * the contract must exist, belong to the calling agent, and still be CLAIMED.
+   * the contract must exist, belong to the calling agent, still be CLAIMED,
+   * and carry matching claim_token lease credentials (FC-301).
    */
   private loadClaimedContractForHolder(
     contractId: string,
     agentId: string,
-    operation: 'fulfill' | 'release' | 'extend' | 'fail'
+    operation: 'fulfill' | 'release' | 'extend' | 'fail',
+    claimToken?: string
   ): ContractRow {
     const row = this.db
       .prepare(`SELECT * FROM contracts WHERE id = ?`)
@@ -640,6 +669,20 @@ export class FerryCatEngine {
       throw new Error(
         `Cannot ${operation} contract "${contractId}": expected status 'CLAIMED', but current status is '${row.status}'.`
       );
+    }
+
+    // FC-301 Exclusive lease token guard
+    if (row.claim_token) {
+      if (!claimToken && this.strictLeaseTokens) {
+        throw new Error(
+          `Permission denied: contract "${row.id}" is protected by an exclusive lease token (claim_token), but none was provided for ${operation}.`
+        );
+      }
+      if (claimToken && row.claim_token !== claimToken) {
+        throw new Error(
+          `Permission denied: invalid lease token (claim_token) provided for ${operation} on contract "${row.id}".`
+        );
+      }
     }
 
     return row;
@@ -685,7 +728,12 @@ export class FerryCatEngine {
     nowMs: number = Date.now()
   ): ReleaseContractResult {
     const agentId = this.resolveAgentIdentity(input.agent_id, 'agent_id');
-    const row = this.loadClaimedContractForHolder(input.contract_id, agentId, 'release');
+    const row = this.loadClaimedContractForHolder(
+      input.contract_id,
+      agentId,
+      'release',
+      input.claim_token
+    );
 
     if (this.expireIfExecTtlElapsed(row, nowMs)) {
       return {
@@ -737,6 +785,7 @@ export class FerryCatEngine {
         `UPDATE contracts
          SET status = 'SUBMITTED',
              claimed_at = NULL,
+             claim_token = NULL,
              queued_at = ?,
              extend_count = 0,
              toctou_strike = 0,
@@ -770,7 +819,12 @@ export class FerryCatEngine {
    */
   public extendTtl(input: ExtendTtlInput, nowMs: number = Date.now()): ExtendTtlResult {
     const agentId = this.resolveAgentIdentity(input.agent_id, 'agent_id');
-    const row = this.loadClaimedContractForHolder(input.contract_id, agentId, 'extend');
+    const row = this.loadClaimedContractForHolder(
+      input.contract_id,
+      agentId,
+      'extend',
+      input.claim_token
+    );
 
     if (this.expireIfExecTtlElapsed(row, nowMs)) {
       return {
@@ -865,7 +919,12 @@ export class FerryCatEngine {
       throw new Error('reason must not be empty when failing a contract.');
     }
 
-    const row = this.loadClaimedContractForHolder(input.contract_id, agentId, 'fail');
+    const row = this.loadClaimedContractForHolder(
+      input.contract_id,
+      agentId,
+      'fail',
+      input.claim_token
+    );
 
     // A late failure report still loses to the TTL, but the worker's reason is preserved for the requester
     if (this.expireIfExecTtlElapsed(row, nowMs, `EXEC_TTL_EXPIRED (late failure report: ${reason})`)) {

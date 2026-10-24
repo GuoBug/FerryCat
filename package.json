@@ -1,6 +1,6 @@
 {
   "name": "ferrycat",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "FerryCat: Contract-driven cross-host AI agent handoff & review bus over MCP and SQLite WAL",
   "type": "module",
   "main": "dist/index.js",

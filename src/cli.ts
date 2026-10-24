@@ -101,22 +101,23 @@ Options:
 Examples:
   ferrycat-cli verify --id fc_1792754417178_48cca09f --agent workbuddy`,
 
-  fulfill: `Usage: ferrycat-cli fulfill [--id <contract_id>] [--agent <worker_id>] [--summary <text>] [--file <path|->] ['{...}']
+  fulfill: `Usage: ferrycat-cli fulfill [--id <contract_id>] [--agent <worker_id>] [--token <claim_token>] [--summary <text>] [--file <path|->] ['{...}']
 
 Submits execution or review results for a CLAIMED contract. Enforces TOCTOU fingerprint verification
 (with 1-strike soft-failure buffering per ADR-0004) and Ajv JSON Schema validation.
 
 Options:
-  --id <contract_id>  Contract ID to fulfill
-  --agent <id>        Holder worker agent identifier
-  --summary <text>    Result summary text (can be used directly when structured_output is not needed)
-  --file <path | ->   JSON payload file path, or "-" to read from stdin
+  --id <contract_id>    Contract ID to fulfill
+  --agent <id>          Holder worker agent identifier
+  --token <claim_token> Exclusive lease token returned by poll (or FERRYCAT_CLAIM_TOKEN env)
+  --summary <text>      Result summary text (can be used directly when structured_output is not needed)
+  --file <path | ->     JSON payload file path, or "-" to read from stdin
 
 Examples:
-  ferrycat-cli fulfill --id fc_123 --agent workbuddy --summary "Audit passed cleanly."
+  ferrycat-cli fulfill --id fc_123 --agent workbuddy --token <token> --summary "Audit passed cleanly."
   cat fulfill.json | ferrycat-cli fulfill --agent workbuddy -`,
 
-  release: `Usage: ferrycat-cli release --id <contract_id> [--agent <worker_id>] [--reason <text>]
+  release: `Usage: ferrycat-cli release --id <contract_id> [--agent <worker_id>] [--token <claim_token>] [--reason <text>]
 
 Hands a CLAIMED contract back to the queue tail as SUBMITTED with a fresh queue window.
 Preserves contract-level retry_count; RESETS holder-level extend_count AND toctou_strike to 0.
@@ -124,36 +125,39 @@ This is holder-level quota isolation (ADR-0004 §4.3): the next holder must not 
 consumed by a previous holder. Max 3 releases.
 
 Options:
-  --id <contract_id>  CLAIMED contract ID to release (required)
-  --agent <id>        Current holder agent identifier
-  --reason <text>     Optional reason for releasing the contract
+  --id <contract_id>    CLAIMED contract ID to release (required)
+  --agent <id>          Current holder agent identifier
+  --token <claim_token> Exclusive lease token returned by poll (or FERRYCAT_CLAIM_TOKEN env)
+  --reason <text>       Optional reason for releasing the contract
 
 Examples:
-  ferrycat-cli release --id fc_123 --agent workbuddy --reason "wrong local branch"`,
+  ferrycat-cli release --id fc_123 --agent workbuddy --token <token> --reason "wrong local branch"`,
 
-  extend: `Usage: ferrycat-cli extend --id <contract_id> [--agent <worker_id>]
+  extend: `Usage: ferrycat-cli extend --id <contract_id> [--agent <worker_id>] [--token <claim_token>]
 
 Heartbeat renewal: resets claimed_at to now, restarting the contract's exec_ttl_sec window.
 Max 5 extensions per holder, bounded by created_at + 4 * queue_ttl_sec.
 
 Options:
-  --id <contract_id>  CLAIMED contract ID to renew (required)
-  --agent <id>        Current holder agent identifier
+  --id <contract_id>    CLAIMED contract ID to renew (required)
+  --agent <id>          Current holder agent identifier
+  --token <claim_token> Exclusive lease token returned by poll (or FERRYCAT_CLAIM_TOKEN env)
 
 Examples:
-  ferrycat-cli extend --id fc_123 --agent workbuddy`,
+  ferrycat-cli extend --id fc_123 --agent workbuddy --token <token>`,
 
-  fail: `Usage: ferrycat-cli fail --id <contract_id> [--agent <worker_id>] --reason <text>
+  fail: `Usage: ferrycat-cli fail --id <contract_id> [--agent <worker_id>] [--token <claim_token>] --reason <text>
 
 Explicitly transitions a CLAIMED contract to terminal FAILED state with an error reason.
 
 Options:
-  --id <contract_id>  CLAIMED contract ID to fail (required)
-  --agent <id>        Current holder agent identifier
-  --reason <text>     Mandatory explanation of why the task cannot be completed
+  --id <contract_id>    CLAIMED contract ID to fail (required)
+  --agent <id>          Current holder agent identifier
+  --token <claim_token> Exclusive lease token returned by poll (or FERRYCAT_CLAIM_TOKEN env)
+  --reason <text>       Mandatory explanation of why the task cannot be completed
 
 Examples:
-  ferrycat-cli fail --id fc_123 --agent workbuddy --reason "Missing compiler toolchain"`,
+  ferrycat-cli fail --id fc_123 --agent workbuddy --token <token> --reason "Missing compiler toolchain"`,
 
   inspect: `Usage: ferrycat-cli inspect [--id <contract_id>] [--target <agent>] [--status <status>] [--limit <n>] [--format <table|json>] [--json] [--table]
 
@@ -184,8 +188,8 @@ Options:
                               exec:  auto-claim and run --exec or --exec-file
   --once                    Run a single poll cycle and exit immediately
   --interval <ms>           Polling interval in milliseconds for persistent loop (>= 100, default: 1000)
-  --exec <cmd>              Shell command to run on claim (contract JSON piped via stdin)
-  --exec-file <script>      Script file (.js/.mjs/.cjs/.ts/.ps1/.sh) to run directly without shell quote escaping
+  --exec-file <script>      Recommended: script file (.js/.mjs/.cjs/.ts/.ps1/.sh) executed directly via execFile without shell interpolation
+  --exec <cmd>              Shell command to run on claim (UNSAFE: executes via system shell, contract JSON piped via stdin)
 
 Examples:
   ferrycat-cli worker --agent workbuddy --mode=watch
@@ -372,6 +376,8 @@ function parseArgs(argv: string[]): ParsedCliArgs {
       flagOverrides.target_agent = requireFlagValue('--target', rest[++i]);
     } else if (token === '--id') {
       flagOverrides.contract_id = requireFlagValue('--id', rest[++i]);
+    } else if (token === '--token' || token === '--claim-token') {
+      flagOverrides.claim_token = requireFlagValue(token, rest[++i]);
     } else if (token === '--status') {
       flagOverrides.status = requireFlagValue('--status', rest[++i]);
     } else if (token === '--reason') {
@@ -454,6 +460,13 @@ function parseArgs(argv: string[]): ParsedCliArgs {
     ...flagOverrides,
   };
 
+  if (!data.claim_token && process.env.FERRYCAT_CLAIM_TOKEN) {
+    const envToken = process.env.FERRYCAT_CLAIM_TOKEN.trim();
+    if (envToken) {
+      data.claim_token = envToken;
+    }
+  }
+
   return {
     command,
     helpRequested: false,
@@ -502,6 +515,7 @@ interface ContractPayload {
   contract_schema: Record<string, unknown> | null;
   claimed_at: number;
   exec_ttl_sec: number;
+  claim_token?: string;
 }
 
 interface ExecSpec {
@@ -557,6 +571,7 @@ async function executeTaskAndFulfill(
       FERRYCAT_TASK_TYPE: contract.task_type,
       FERRYCAT_WORKSPACE_ROOT: contract.workspace_root,
       FERRYCAT_TARGET_AGENT: contract.target_agent,
+      FERRYCAT_CLAIM_TOKEN: contract.claim_token ?? '',
     };
 
     const timeoutMs = Math.max(10000, contract.exec_ttl_sec * 1000);
@@ -575,6 +590,7 @@ async function executeTaskAndFulfill(
             contractStatus = engine.failContract({
               contract_id: contract.contract_id,
               agent_id: contract.target_agent,
+              claim_token: contract.claim_token,
               reason: execError.slice(0, 2000),
             }).status;
           } catch (failErr) {
@@ -615,6 +631,7 @@ async function executeTaskAndFulfill(
           const validatedFulfillInput = FulfillContractSchema.parse({
             contract_id: contract.contract_id,
             agent_id: contract.target_agent,
+            claim_token: contract.claim_token,
             result_summary: boundedSummary,
             structured_output: structuredOutput,
           });
@@ -1059,6 +1076,12 @@ async function main(): Promise<void> {
 
         if (validated.exec && validated.exec_file) {
           throw new Error('Cannot specify both --exec and --exec-file; please choose one.');
+        }
+
+        if (validated.exec) {
+          console.error(
+            '[FerryCat Security Notice] --exec executes commands via system shell with shell interpolation. For safer execution, prefer --exec-file <script>.'
+          );
         }
 
         if (validated.exec_file) {

@@ -66,6 +66,8 @@ export interface ContractRow {
   toctou_strike: number;
   /** Preserved submission payload if fulfill transitions to terminal POINTER_STALE. */
   salvaged_result_json?: string | null;
+  /** Exclusive lease token issued at claim time (FC-301). NULL for unassigned or released rows. */
+  claim_token?: string | null;
 }
 
 export interface DispatchContractInput {
@@ -116,6 +118,8 @@ export interface PollNextTaskResult {
     contract_schema: Record<string, unknown> | null;
     claimed_at: number;
     exec_ttl_sec: number;
+    /** Exclusive lease token issued for this claim session (FC-301). Pass to mutating operations. */
+    claim_token?: string;
   };
   stale_error?: {
     contract_id: string;
@@ -128,6 +132,7 @@ export interface PollNextTaskResult {
 export interface FulfillContractInput {
   contract_id: string;
   agent_id?: string;
+  claim_token?: string;
   result_summary: string;
   structured_output?: Record<string, unknown>;
   artifacts_pointers?: ArtifactPointer[];
@@ -153,6 +158,7 @@ export interface FulfillContractResult {
 export interface VerifyContractInput {
   contract_id: string;
   agent_id?: string;
+  claim_token?: string;
 }
 
 export interface VerifyContractResult {
@@ -176,6 +182,7 @@ export interface VerifyContractResult {
 export interface ReleaseContractInput {
   contract_id: string;
   agent_id?: string;
+  claim_token?: string;
   reason?: string;
 }
 
@@ -191,6 +198,7 @@ export interface ReleaseContractResult {
 export interface ExtendTtlInput {
   contract_id: string;
   agent_id?: string;
+  claim_token?: string;
 }
 
 export interface ExtendTtlResult {
@@ -207,6 +215,7 @@ export interface ExtendTtlResult {
 export interface FailContractInput {
   contract_id: string;
   agent_id?: string;
+  claim_token?: string;
   reason: string;
 }
 

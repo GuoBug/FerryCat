@@ -38,12 +38,12 @@
 
 ---
 
-## Phase 0.3.1: Security Hygiene, Lease Isolation & Payload Limits (v0.3.1 — Planned)
+## Phase 0.3.1: Security Hygiene, Lease Isolation & Payload Limits (v0.3.1 — Completed)
 
-- [ ] **FC-301 (Lease Token Isolation)**: Add `claim_token` column to `contracts`; issue unguessable UUID on successful `poll_next_task` preemption; require token verification in `fulfill` / `release` / `extend` / `fail` to prevent cross-worker interference among same-named agent instances.
-- [ ] **FC-302 (Bounded Payload & Schema Depth Limits)**: Add explicit serialization byte limits (1MB~2MB) on `structured_output` and `contract_schema` to protect shared SQLite database from unbounded bloating.
-- [ ] **FC-303 (CLI Worker Execution Hardening)**: Promote `--exec-file` (execFile without shell injection risks) as primary recommendation, and explicitly mark `--exec` as shell compatibility mode.
-- [ ] **FC-304 (Docs & Security Hygiene Hotfix)**: Publish Threat Model chapter, refine TOCTOU race window descriptions down to atomic SQL boundaries, and unify `workspace_root` relative/absolute resolution rules.
+- [x] **FC-301 (Lease Token Isolation)**: Add `claim_token` column to `contracts`; issue unguessable UUID on successful `poll_next_task` preemption; require token verification in `fulfill` / `release` / `extend` / `fail` to prevent cross-worker interference among same-named agent instances.
+- [x] **FC-302 (Bounded Payload & Schema Depth Limits)**: Add explicit serialization byte limits (1MB~2MB) on `structured_output` and `contract_schema` to protect shared SQLite database from unbounded bloating.
+- [x] **FC-303 (CLI Worker Execution Hardening)**: Promote `--exec-file` (execFile without shell injection risks) as primary recommendation, and explicitly mark `--exec` as shell compatibility mode.
+- [x] **FC-304 (Docs & Security Hygiene Hotfix)**: Publish Threat Model chapter, refine TOCTOU race window descriptions down to atomic SQL boundaries, and unify `workspace_root` relative/absolute resolution rules.
 
 ---
 

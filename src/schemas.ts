@@ -1,5 +1,55 @@
 import { z } from 'zod';
 
+export const MAX_JSON_PAYLOAD_BYTES = 1024 * 1024; // 1MB limit (FC-302)
+export const MAX_JSON_DEPTH = 32; // Max nesting depth limit (FC-302)
+
+export function measureJsonDepth(val: unknown, currentDepth: number = 0): number {
+  if (currentDepth > MAX_JSON_DEPTH) return currentDepth;
+  if (typeof val !== 'object' || val === null) return currentDepth;
+  let max = currentDepth;
+  if (Array.isArray(val)) {
+    for (const item of val) {
+      const d = measureJsonDepth(item, currentDepth + 1);
+      if (d > max) max = d;
+      if (max > MAX_JSON_DEPTH) return max;
+    }
+  } else {
+    for (const key of Object.keys(val as Record<string, unknown>)) {
+      const d = measureJsonDepth((val as Record<string, unknown>)[key], currentDepth + 1);
+      if (d > max) max = d;
+      if (max > MAX_JSON_DEPTH) return max;
+    }
+  }
+  return max;
+}
+
+export function validateJsonPayload(val: unknown): { valid: boolean; error?: string } {
+  if (val === undefined || val === null) return { valid: true };
+  const depth = measureJsonDepth(val);
+  if (depth > MAX_JSON_DEPTH) {
+    return {
+      valid: false,
+      error: `JSON payload nesting depth (${depth}) exceeds maximum allowed depth of ${MAX_JSON_DEPTH} (FC-302).`,
+    };
+  }
+  try {
+    const serialized = JSON.stringify(val);
+    const bytes = Buffer.byteLength(serialized, 'utf8');
+    if (bytes > MAX_JSON_PAYLOAD_BYTES) {
+      return {
+        valid: false,
+        error: `JSON payload size (${bytes} bytes) exceeds maximum allowed limit of ${MAX_JSON_PAYLOAD_BYTES} bytes (1MB) (FC-302).`,
+      };
+    }
+  } catch (err) {
+    return {
+      valid: false,
+      error: `JSON payload could not be serialized: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  return { valid: true };
+}
+
 export const DispatchContractShape = {
   requester_agent: z
     .string()
@@ -58,8 +108,11 @@ export const DispatchContractShape = {
   contract_schema: z
     .record(z.unknown())
     .optional()
+    .refine((val) => !val || validateJsonPayload(val).valid, {
+      message: 'contract_schema must not exceed 1MB serialized or 32 levels of nesting (FC-302)',
+    })
     .describe(
-      'Optional Draft-07 JSON Schema that structured_output must validate against. Enforces bounded retry (max 2 RETRY_NEEDED attempts before terminal VALIDATION_FAILED).'
+      'Optional Draft-07 JSON Schema that structured_output must validate against. Bounded to 1MB and max 32 depth (FC-302).'
     ),
   queue_ttl_sec: z
     .number()
@@ -100,6 +153,14 @@ export const FulfillContractShape = {
     .max(64)
     .optional()
     .describe('Worker agent identifier. Must match the contract target_agent (defaults to AGENT_NAME env var).'),
+  claim_token: z
+    .string()
+    .min(1)
+    .max(128)
+    .optional()
+    .describe(
+      'Exclusive lease token returned in contract.claim_token by poll_next_task (FC-301). Mutating operations must provide matching claim_token to prevent cross-worker interference.'
+    ),
   result_summary: z
     .string()
     .min(1)
@@ -108,8 +169,11 @@ export const FulfillContractShape = {
   structured_output: z
     .record(z.unknown())
     .optional()
+    .refine((val) => !val || validateJsonPayload(val).valid, {
+      message: 'structured_output must not exceed 1MB serialized or 32 levels of nesting (FC-302)',
+    })
     .describe(
-      'Structured JSON payload matching contract_schema. For code reviews, pass proposed patches in fixes: [{ path, patch, description }] rather than editing pointer files directly (ADR-0004).'
+      'Structured JSON payload matching contract_schema. Bounded to 1MB and max 32 depth (FC-302). For code reviews, pass proposed patches in fixes: [{ path, patch, description }] rather than editing pointer files directly (ADR-0004).'
     ),
   artifacts_pointers: z
     .array(
@@ -137,6 +201,12 @@ export const VerifyContractShape = {
     .max(64)
     .optional()
     .describe('Optional caller agent identifier for audit logging. Does not restrict read-only verification.'),
+  claim_token: z
+    .string()
+    .min(1)
+    .max(128)
+    .optional()
+    .describe('Optional lease token for caller verification (FC-301).'),
 };
 
 export const ReleaseContractShape = {
@@ -151,6 +221,12 @@ export const ReleaseContractShape = {
     .max(64)
     .optional()
     .describe('Current holder agent identifier. Must match target_agent of the claimed contract (defaults to AGENT_NAME env var).'),
+  claim_token: z
+    .string()
+    .min(1)
+    .max(128)
+    .optional()
+    .describe('Exclusive lease token returned in contract.claim_token by poll_next_task (FC-301).'),
   reason: z
     .string()
     .min(1)
@@ -171,6 +247,12 @@ export const ExtendTtlShape = {
     .max(64)
     .optional()
     .describe('Current holder agent identifier. Must match target_agent of the claimed contract (defaults to AGENT_NAME env var).'),
+  claim_token: z
+    .string()
+    .min(1)
+    .max(128)
+    .optional()
+    .describe('Exclusive lease token returned in contract.claim_token by poll_next_task (FC-301).'),
 };
 
 export const FailContractShape = {
@@ -185,6 +267,12 @@ export const FailContractShape = {
     .max(64)
     .optional()
     .describe('Current holder agent identifier. Must match target_agent of the claimed contract (defaults to AGENT_NAME env var).'),
+  claim_token: z
+    .string()
+    .min(1)
+    .max(128)
+    .optional()
+    .describe('Exclusive lease token returned in contract.claim_token by poll_next_task (FC-301).'),
   reason: z
     .string()
     .min(1)
@@ -266,13 +354,17 @@ export const WorkerCommandShape = {
     .min(1)
     .max(1024)
     .optional()
-    .describe('Optional command or script to execute upon task claim; stdout will be used to fulfill contract automatically'),
+    .describe(
+      'Shell command string to execute upon task claim (UNSAFE: executes via system shell, contract JSON piped via stdin). Prefer --exec-file for scripts.'
+    ),
   exec_file: z
     .string()
     .min(1)
     .max(1024)
     .optional()
-    .describe('Optional script file (.js/.mjs/.cjs/.ts/.ps1/.sh) to execute upon task claim without shell quote escaping'),
+    .describe(
+      'Recommended script file (.js/.mjs/.cjs/.ts/.ps1/.sh) to execute directly via execFile without shell quote escaping or injection risks.'
+    ),
 };
 
 export const WorkerCommandSchema = z.object(WorkerCommandShape).strict();

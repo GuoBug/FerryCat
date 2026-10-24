@@ -38,12 +38,12 @@
 
 ---
 
-## Phase 0.3.1: 安全严谨性热修复与租约隔离 (v0.3.1 — 规划中)
+## Phase 0.3.1: 安全严谨性热修复与租约隔离 (v0.3.1 — 已完成)
 
-- [ ] **FC-301（Lease Token 独占租约隔离）**：`contracts` 表新增 `claim_token` 列；`poll_next_task` 抢占成功时签发随机 UUID；`fulfill` / `release` / `extend` / `fail` 强制校验凭据，彻底杜绝同名 Worker 并发交叉操作。
-- [ ] **FC-302（Payload 尺寸与深度上限校验）**：对 `structured_output` 与 `contract_schema` 引入 1MB~2MB 序列化大小限制，防止 SQLite 单行数据膨胀。
-- [ ] **FC-303（CLI Worker 执行安全加固）**：以 `--exec-file`（无 Shell 注入风险）为主推执行方式，将 `--exec` 标记为显式 Shell 兼容模式。
-- [ ] **FC-304（文档与严谨性热修复）**：增补 Threat Model 章节、严谨化 TOCTOU 纳秒级收敛措辞、规范 `workspace_root` 相对/绝对路径说明。
+- [x] **FC-301（Lease Token 独占租约隔离）**：`contracts` 表新增 `claim_token` 列；`poll_next_task` 抢占成功时签发随机 UUID；`fulfill` / `release` / `extend` / `fail` 强制校验凭据，彻底杜绝同名 Worker 并发交叉操作。
+- [x] **FC-302（Payload 尺寸与深度上限校验）**：对 `structured_output` 与 `contract_schema` 引入 1MB~2MB 序列化大小限制，防止 SQLite 单行数据膨胀。
+- [x] **FC-303（CLI Worker 执行安全加固）**：以 `--exec-file`（无 Shell 注入风险）为主推执行方式，将 `--exec` 标记为显式 Shell 兼容模式。
+- [x] **FC-304（文档与严谨性热修复）**：增补 Threat Model 章节、严谨化 TOCTOU 纳秒级收敛措辞、规范 `workspace_root` 相对/绝对路径说明。
 
 ---
 
