@@ -1,6 +1,7 @@
 {
   "name": "ferrycat",
-  "version": "0.3.1",
+  "version": "0.3.2",
+  "mcpName": "io.github.GuoBug/ferrycat",
   "description": "FerryCat: Contract-driven cross-host AI agent handoff & review bus over MCP and SQLite WAL",
   "type": "module",
   "main": "dist/index.js",
@@ -8,10 +9,28 @@
     "ferrycat": "bin/ferrycat.js",
     "ferrycat-cli": "bin/ferrycat-cli.js"
   },
+  "files": [
+    "dist",
+    "bin",
+    "README.md",
+    "README_zh.md",
+    "LICENSE",
+    "server.json",
+    "glama.json"
+  ],
   "scripts": {
     "build": "tsc",
+    "prepack": "npm run build",
     "start": "node --experimental-sqlite dist/index.js",
     "test": "node --experimental-sqlite --import tsx test/run-all.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/GuoBug/FerryCat.git"
+  },
+  "homepage": "https://github.com/GuoBug/FerryCat#readme",
+  "bugs": {
+    "url": "https://github.com/GuoBug/FerryCat/issues"
   },
   "keywords": [
     "mcp",

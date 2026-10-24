@@ -5,6 +5,8 @@
   <b>中文</b>
 </p>
 
+[![npm version](https://img.shields.io/npm/v/ferrycat.svg?style=flat&color=cb3837&logo=npm)](https://www.npmjs.com/package/ferrycat)
+[![MCP Registry](https://img.shields.io/badge/MCP_Registry-Active-10b981?style=flat)](https://registry.modelcontextprotocol.io/v0/servers?search=ferrycat)
 [![Node.js Version](https://img.shields.io/badge/Node.js-22.5%2B-339933?style=flat&logo=nodedotjs)](https://nodejs.org/)
 [![Native Addons](https://img.shields.io/badge/Native_Addons-0_(node%3Asqlite)-success?style=flat)]()
 [![Protocol](https://img.shields.io/badge/Protocol-MCP_Stdio-orange?style=flat)](https://modelcontextprotocol.io/)

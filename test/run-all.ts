@@ -1312,7 +1312,7 @@ async function test11_PhaseBCliErgonomicsAndToctouBuffer(): Promise<void> {
 
     const helpGlobal = await runCli(['--help']);
     assert.strictEqual(helpGlobal.code, 0);
-    assert.ok(helpGlobal.stdout.includes('FerryCat CLI v0.3.1'));
+    assert.ok(helpGlobal.stdout.includes('FerryCat CLI v0.3.2'));
 
     const helpFulfill = await runCli(['help', 'fulfill']);
     assert.strictEqual(helpFulfill.code, 0);
@@ -1320,7 +1320,7 @@ async function test11_PhaseBCliErgonomicsAndToctouBuffer(): Promise<void> {
 
     const verRes = await runCli(['--version']);
     assert.strictEqual(verRes.code, 0);
-    assert.strictEqual(verRes.stdout.trim(), '0.3.1');
+    assert.strictEqual(verRes.stdout.trim(), '0.3.2');
 
     // Stdin dispatch with UTF-8 BOM (\uFEFF) via --file -
     const stdinDispatchPayload =

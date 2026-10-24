@@ -52,3 +52,11 @@
 - [ ] **FC-201 (`POINTER_STALE` Queue Continuation)**: When the head-of-line contract fails fingerprint verification and transitions to `POINTER_STALE`, continue scanning the remaining candidate contracts in the same `poll_next_task` call while surfacing the stale warning in metadata (v0.3.0 while-loop continuous pagination implemented; final convergence verification pending).
 - [ ] **FC-202 (Self-Contained Git Patch Mode)**: Support optional inline `git diff` patch snapshots for cross-branch or disjoint workspace reviews where both hosts are not on the exact same working tree file state.
 - [ ] **FC-203 (Async Non-Blocking Transient Retry)**: Replace synchronous `Atomics.wait(150ms)` with async `setTimeout` promise delay in `pollNextTask` to avoid blocking the MCP stdio event loop during transient IDE save retries.
+
+---
+
+## Phase 3: Active Wake-up & Daemon Orchestration (Requirements Backlog / Future Exploration)
+
+- [ ] **FC-401 (Headless Background Daemon Management `ferrycat daemon`)**: Provide background daemon capabilities (cross-platform service / background daemon mounting) to monitor SQLite queues with low overhead without requiring an active foreground terminal window.
+- [ ] **FC-402 (Multi-Agent CLI Routing Matrix & Config-Driven Active Wake-up)**: Introduce declarative configuration (`ferrycat.config.json`) defining mapping rules between `target_agent` identities and local CLI executables/scripts (e.g. `codex -> codex exec`, `claude -> claude -p`, `antigravity -> agy run`). Upon dispatch, the daemon actively spawns and wakes up the targeted agent CLI with contract payloads.
+- [ ] **FC-403 (OS Desktop Notifications & Local Event Hooks)**: Support native OS desktop notifications (Windows Toast / macOS Notification / Linux libnotify) and local HTTP webhooks, alerting developers or external workflows immediately when contracts are created, claimed, completed, or failed.
