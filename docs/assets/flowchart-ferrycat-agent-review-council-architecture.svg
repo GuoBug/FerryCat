@@ -1,0 +1,140 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 480" width="960" height="480" style="background:#0b0f19; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <defs>
+    <filter id="shadow" x="-5%" y="-5%" width="110%" height="110%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.6"/>
+    </filter>
+    <linearGradient id="leadGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="meshGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#064e3b"/>
+      <stop offset="100%" stop-color="#022c22"/>
+    </linearGradient>
+    <linearGradient id="agentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e1b4b"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#10b981"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#f97316"/>
+    </marker>
+    <marker id="arrow-cyan" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#06b6d4"/>
+    </marker>
+  </defs>
+
+  <!-- Title / Neo-Brutalist Frame -->
+  <rect x="20" y="20" width="920" height="440" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2" filter="url(#shadow)"/>
+  
+  <text x="50" y="56" fill="#f8fafc" font-size="18" font-weight="700" letter-spacing="0.5">FERRYCAT MULTI-AGENT REVIEW BOARD &amp; GOVERNANCE MESH</text>
+  <text x="50" y="78" fill="#94a3b8" font-size="12">From Manual Clipboard Juggling to Lead-Level Deterministic Orchestration (Phase 3)</text>
+  <line x1="50" y1="92" x2="910" y2="92" stroke="#1e293b" stroke-width="2"/>
+
+  <!-- ZONE 1: Human Lead (The Meeting Chair) -->
+  <g transform="translate(50, 115)">
+    <rect x="0" y="0" width="230" height="310" rx="10" fill="url(#leadGrad)" stroke="#38bdf8" stroke-width="2"/>
+    <rect x="0" y="0" width="230" height="36" rx="10" fill="#0369a1"/>
+    <text x="15" y="24" fill="#ffffff" font-size="13" font-weight="700">HUMAN TECH LEAD (CHAIR)</text>
+    
+    <rect x="15" y="55" width="200" height="60" rx="6" fill="#0b0f19" stroke="#0284c7" stroke-width="1"/>
+    <text x="25" y="75" fill="#38bdf8" font-size="12" font-weight="600">1. Define Agenda &amp; Scope</text>
+    <text x="25" y="93" fill="#94a3b8" font-size="11">Lock SHA-256 Pointers</text>
+    <text x="25" y="107" fill="#64748b" font-size="10">Target Workspace: F:\git\...</text>
+
+    <!-- Council Review Status -->
+    <rect x="15" y="130" width="200" height="95" rx="6" fill="#0b0f19" stroke="#334155" stroke-width="1"/>
+    <text x="25" y="150" fill="#f1f5f9" font-size="12" font-weight="600">Active Governance</text>
+    <text x="25" y="168" fill="#94a3b8" font-size="11">Watchdog: extend_ttl &lt; 5</text>
+    <text x="25" y="184" fill="#94a3b8" font-size="11">Salvage: captures stdout</text>
+    <text x="25" y="200" fill="#10b981" font-size="11">Process Group: isolated</text>
+
+    <!-- Final Approval -->
+    <rect x="15" y="240" width="200" height="55" rx="6" fill="#064e3b" stroke="#10b981" stroke-width="1.5"/>
+    <text x="25" y="262" fill="#34d399" font-size="12" font-weight="700">3. Final Decisive Approval</text>
+    <text x="25" y="280" fill="#ecfdf5" font-size="11">Sign Verdict &amp; Commit</text>
+  </g>
+
+  <!-- ZONE 2: FerryCat Contract Hub (SQLite WAL & CAS Lease) -->
+  <g transform="translate(320, 115)">
+    <rect x="0" y="0" width="300" height="310" rx="10" fill="url(#meshGrad)" stroke="#10b981" stroke-width="2"/>
+    <rect x="0" y="0" width="300" height="36" rx="10" fill="#047857"/>
+    <text x="15" y="24" fill="#ffffff" font-size="13" font-weight="700">FERRYCAT CONTRACT MESH (WAL)</text>
+
+    <!-- Sub-components -->
+    <g transform="translate(20, 50)">
+      <rect x="0" y="0" width="260" height="48" rx="6" fill="#022c22" stroke="#059669" stroke-width="1"/>
+      <text x="12" y="20" fill="#a7f3d0" font-size="11" font-weight="700">Short-TX CAS Lease (daemon_locks)</text>
+      <text x="12" y="36" fill="#6ee7b7" font-size="10">Zero database-wide locks · No WAL explosion</text>
+    </g>
+
+    <g transform="translate(20, 108)">
+      <rect x="0" y="0" width="260" height="52" rx="6" fill="#022c22" stroke="#059669" stroke-width="1"/>
+      <text x="12" y="20" fill="#a7f3d0" font-size="11" font-weight="700">ADR-0004 TOCTOU Soft-Failure</text>
+      <text x="12" y="36" fill="#6ee7b7" font-size="10">Strike 1: RETRY_NEEDED buffer</text>
+      <text x="12" y="48" fill="#34d399" font-size="10">Strike 2: Terminal POINTER_STALE</text>
+    </g>
+
+    <g transform="translate(20, 170)">
+      <rect x="0" y="0" width="260" height="52" rx="6" fill="#022c22" stroke="#059669" stroke-width="1"/>
+      <text x="12" y="20" fill="#a7f3d0" font-size="11" font-weight="700">Execution Supervisor (Step 0)</text>
+      <text x="12" y="36" fill="#6ee7b7" font-size="10">Keep-alive heartbeat: min(60s, ttl/3)</text>
+      <text x="12" y="48" fill="#34d399" font-size="10">Process tree kill: taskkill /T /F &amp; -pgid</text>
+    </g>
+
+    <g transform="translate(20, 232)">
+      <rect x="0" y="0" width="260" height="58" rx="6" fill="#022c22" stroke="#059669" stroke-width="1"/>
+      <text x="12" y="20" fill="#a7f3d0" font-size="11" font-weight="700">Strict 7-State Transition Guard</text>
+      <text x="12" y="36" fill="#6ee7b7" font-size="10">SUBMITTED → CLAIMED → COMPLETED</text>
+      <text x="12" y="48" fill="#f87171" font-size="10">↳ FAILED / TIMED_OUT / VALIDATION_FAILED</text>
+    </g>
+  </g>
+
+  <!-- ZONE 3: Heterogeneous Agent Council (The Staff) -->
+  <g transform="translate(660, 115)">
+    <rect x="0" y="0" width="250" height="310" rx="10" fill="url(#agentGrad)" stroke="#a855f7" stroke-width="2"/>
+    <rect x="0" y="0" width="250" height="36" rx="10" fill="#6b21a8"/>
+    <text x="15" y="24" fill="#ffffff" font-size="13" font-weight="700">AGENT REVIEW COUNCIL (STAFF)</text>
+
+    <!-- Agent 1: Implementation -->
+    <g transform="translate(15, 50)">
+      <rect x="0" y="0" width="220" height="65" rx="6" fill="#0b0f19" stroke="#6366f1" stroke-width="1"/>
+      <text x="12" y="20" fill="#818cf8" font-size="11" font-weight="700">Implementer Agent</text>
+      <text x="12" y="36" fill="#c7d2fe" font-size="10">Role: Proposer &amp; Implementation</text>
+      <text x="12" y="52" fill="#94a3b8" font-size="10">Dispatches contract &amp; fixes diffs</text>
+    </g>
+
+    <!-- Agent 2: Critic -->
+    <g transform="translate(15, 125)">
+      <rect x="0" y="0" width="220" height="65" rx="6" fill="#0b0f19" stroke="#ec4899" stroke-width="1"/>
+      <text x="12" y="20" fill="#f472b6" font-size="11" font-weight="700">Architecture Critic Agent</text>
+      <text x="12" y="36" fill="#fbcfe8" font-size="10">Role: Security &amp; Concurrency Critic</text>
+      <text x="12" y="52" fill="#94a3b8" font-size="10">Debates locking boundaries &amp; leaks</text>
+    </g>
+
+    <!-- Agent 3: Auditor -->
+    <g transform="translate(15, 200)">
+      <rect x="0" y="0" width="220" height="85" rx="6" fill="#0b0f19" stroke="#eab308" stroke-width="1"/>
+      <text x="12" y="20" fill="#facc15" font-size="11" font-weight="700">Adversarial Auditor Agent</text>
+      <text x="12" y="36" fill="#fef08a" font-size="10">Role: Opposing Auditor &amp; Gate Guard</text>
+      <text x="12" y="52" fill="#94a3b8" font-size="10">Strict offline CI &amp; hermetic proofs</text>
+      <text x="12" y="68" fill="#4ade80" font-size="10">Signs: APPROVED (CK-01~09)</text>
+    </g>
+  </g>
+
+  <!-- CONNECTING ARROWS -->
+  <!-- Lead to Hub (Dispatch) -->
+  <path d="M 280 185 L 320 185" stroke="#38bdf8" stroke-width="2.5" marker-end="url(#arrow-cyan)"/>
+  
+  <!-- Hub to Council (Poll / Claim) -->
+  <path d="M 620 185 L 660 185" stroke="#10b981" stroke-width="2.5" marker-end="url(#arrow-green)"/>
+
+  <!-- Council to Hub (Fulfill / Debate / Checkpoints) -->
+  <path d="M 660 270 L 620 270" stroke="#f97316" stroke-width="2.5" marker-end="url(#arrow-orange)"/>
+
+  <!-- Hub to Lead (Arbitration & Sign-off) -->
+  <path d="M 320 375 L 280 375" stroke="#10b981" stroke-width="2.5" marker-end="url(#arrow-green)"/>
+
+</svg>
