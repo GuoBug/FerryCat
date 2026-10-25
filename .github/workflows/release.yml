@@ -39,7 +39,13 @@ jobs:
 
       - name: Publish to npm
         if: env.NODE_AUTH_TOKEN != ''
-        run: npm publish --access public
+        run: |
+          TARGET_VERSION="${GITHUB_REF_NAME#v}"
+          if npm view "ferrycat@${TARGET_VERSION}" version > /dev/null 2>&1; then
+            echo "ferrycat@${TARGET_VERSION} is already published on npm, skipping npm publish."
+          else
+            npm publish --access public
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -50,6 +56,31 @@ jobs:
 
       - name: Authenticate to MCP Registry (via GitHub OIDC)
         run: ./mcp-publisher login github-oidc
+
+      - name: Wait for npm registry CDN propagation
+        run: |
+          TARGET_VERSION="${GITHUB_REF_NAME#v}"
+          echo "Waiting for ferrycat@${TARGET_VERSION} to become available on https://registry.npmjs.org/ferrycat/${TARGET_VERSION}..."
+          MAX_ATTEMPTS=15
+          SLEEP_SECONDS=10
+          FOUND=false
+
+          for ((i=1; i<=MAX_ATTEMPTS; i++)); do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "https://registry.npmjs.org/ferrycat/${TARGET_VERSION}")
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "✓ Version ${TARGET_VERSION} is active on registry.npmjs.org (HTTP 200)!"
+              FOUND=true
+              echo "Pausing 10s for edge replica convergence..."
+              sleep 10
+              break
+            fi
+            echo "Attempt $i/$MAX_ATTEMPTS: version not yet visible (HTTP $HTTP_CODE), waiting ${SLEEP_SECONDS}s..."
+            sleep $SLEEP_SECONDS
+          done
+
+          if [ "$FOUND" != "true" ]; then
+            echo "::warning::Timed out waiting for npm CDN propagation after $((MAX_ATTEMPTS * SLEEP_SECONDS))s. Proceeding with publish attempt anyway..."
+          fi
 
       - name: Publish to Official MCP Registry
         run: ./mcp-publisher publish
