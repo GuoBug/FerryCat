@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 500" width="960" height="500" style="background:#0b0f19; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <defs>
+    <filter id="card-shadow" x="-5%" y="-5%" width="110%" height="110%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.5"/>
+    </filter>
+    <linearGradient id="walGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#064e3b"/>
+      <stop offset="100%" stop-color="#022c22"/>
+    </linearGradient>
+    <linearGradient id="cloudGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="lockGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#450a0a"/>
+      <stop offset="100%" stop-color="#1c1917"/>
+    </linearGradient>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#10b981"/>
+    </marker>
+    <marker id="arrow-cyan" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#06b6d4"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#f97316"/>
+    </marker>
+  </defs>
+
+  <!-- Frame Canvas -->
+  <rect x="20" y="20" width="920" height="460" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2" filter="url(#card-shadow)"/>
+
+  <!-- Header -->
+  <text x="50" y="58" fill="#f8fafc" font-size="18" font-weight="700" letter-spacing="0.5">MULTI-AGENT COLLABORATION BACKBONE: ARCHITECTURAL PARADIGM</text>
+  <text x="50" y="80" fill="#94a3b8" font-size="12">Why FerryCat Chose Single-File SQLite WAL Over Heavy Cloud Brokers and Naive File Locks</text>
+  <line x1="50" y1="94" x2="910" y2="94" stroke="#1e293b" stroke-width="2"/>
+
+  <!-- Left Column: 3 Architectural Paradigms Comparison -->
+  <g transform="translate(50, 115)">
+    <!-- Card 1: Cloud Message Broker -->
+    <rect x="0" y="0" width="370" height="95" rx="8" fill="url(#cloudGrad)" stroke="#475569" stroke-width="1.5"/>
+    <text x="16" y="26" fill="#94a3b8" font-size="13" font-weight="700">1. Cloud / Centralized Brokers (Redis / RabbitMQ)</text>
+    <text x="16" y="48" fill="#cbd5e1" font-size="11">✖ Heavy external daemon, mandatory port listening (6379/5672)</text>
+    <text x="16" y="66" fill="#cbd5e1" font-size="11">✖ Network timeout, offline unavailable, complex desktop setup</text>
+    <text x="16" y="84" fill="#f87171" font-size="11" font-weight="600">Verdict: Overkill &amp; fragile for local multi-IDE pair programming</text>
+
+    <!-- Card 2: Naive Local File Locks -->
+    <rect x="0" y="110" width="370" height="95" rx="8" fill="url(#lockGrad)" stroke="#b91c1c" stroke-width="1.5"/>
+    <text x="16" y="136" fill="#fca5a5" font-size="13" font-weight="700">2. Naive File Locks (flock / raw JSON writes)</text>
+    <text x="16" y="158" fill="#fecaca" font-size="11">✖ Windows mandatory file locks trigger EPERM / EBUSY crashes</text>
+    <text x="16" y="176" fill="#fecaca" font-size="11">✖ Coarse granularity, zero state machine or atomic rollback</text>
+    <text x="16" y="194" fill="#f87171" font-size="11" font-weight="600">Verdict: Corrupts JSON files during high-concurrency race</text>
+
+    <!-- Card 3: SQLite WAL Local Bus (Winner) -->
+    <rect x="0" y="220" width="370" height="115" rx="8" fill="url(#walGrad)" stroke="#10b981" stroke-width="2"/>
+    <rect x="290" y="228" width="68" height="20" rx="4" fill="#047857"/>
+    <text x="298" y="242" fill="#ffffff" font-size="10" font-weight="700">CHOSEN</text>
+    <text x="16" y="246" fill="#34d399" font-size="13" font-weight="700">3. Single-File SQLite WAL (FerryCat)</text>
+    <text x="16" y="268" fill="#a7f3d0" font-size="11">✔ Zero external service, 100% offline, zero port conflicts</text>
+    <text x="16" y="286" fill="#a7f3d0" font-size="11">✔ ACID transactions, WAL non-blocking readers &amp; single writer</text>
+    <text x="16" y="304" fill="#a7f3d0" font-size="11">✔ Node v22.5+ node:sqlite built-in: zero C++ ABI compilation trap</text>
+    <text x="16" y="322" fill="#6ee7b7" font-size="11" font-weight="600">Verdict: Minimal overhead, bulletproof determinism</text>
+  </g>
+
+  <!-- Right Column: Inside SQLite WAL & Short Atomic CAS Lease -->
+  <g transform="translate(450, 115)">
+    <rect x="0" y="0" width="460" height="335" rx="10" fill="#0b0f19" stroke="#334155" stroke-width="1.5"/>
+    <text x="20" y="30" fill="#f8fafc" font-size="14" font-weight="700">SQLite WAL Concurrency Engine &amp; CAS Lock Model</text>
+    <text x="20" y="48" fill="#64748b" font-size="11">~/.ferrycat/mesh.db &amp; mesh.db-wal</text>
+    <line x1="20" y1="60" x2="440" y2="60" stroke="#1e293b" stroke-width="1.5"/>
+
+    <!-- Readers Box -->
+    <rect x="20" y="75" width="195" height="75" rx="6" fill="#022c22" stroke="#059669" stroke-width="1"/>
+    <text x="30" y="96" fill="#34d399" font-size="12" font-weight="700">Readers (Host A / B / C)</text>
+    <text x="30" y="114" fill="#94a3b8" font-size="10">inspect_mesh_state, verify</text>
+    <text x="30" y="132" fill="#6ee7b7" font-size="10" font-weight="600">Read from WAL index (No Lock!)</text>
+
+    <!-- Writers Box -->
+    <rect x="245" y="75" width="195" height="75" rx="6" fill="#1c1917" stroke="#ea580c" stroke-width="1"/>
+    <text x="255" y="96" fill="#fb923c" font-size="12" font-weight="700">Writers (dispatch / poll)</text>
+    <text x="255" y="114" fill="#94a3b8" font-size="10">Short atomic write CAS</text>
+    <text x="255" y="132" fill="#fdba74" font-size="10" font-weight="600">&lt;50µs TX, never block readers</text>
+
+    <!-- Flow Arrows -->
+    <path d="M 117 150 L 117 180 L 210 180" fill="none" stroke="#10b981" stroke-width="2" marker-end="url(#arrow-green)"/>
+    <path d="M 342 150 L 342 180 L 250 180" fill="none" stroke="#f97316" stroke-width="2" marker-end="url(#arrow-orange)"/>
+
+    <!-- Central Hub: The Core Invariant -->
+    <rect x="20" y="195" width="420" height="52" rx="6" fill="#0f172a" stroke="#0284c7" stroke-width="1.5"/>
+    <text x="32" y="216" fill="#38bdf8" font-size="12" font-weight="700">Core Invariant: Readers NEVER Block Writers; Writers NEVER Block Readers</text>
+    <text x="32" y="234" fill="#94a3b8" font-size="10.5">Shared memory WAL index (.shm) maps page frames into reader memory spaces directly</text>
+
+    <!-- The Lock Pitfall Warning Box -->
+    <rect x="20" y="260" width="420" height="60" rx="6" fill="#1e1b4b" stroke="#6366f1" stroke-width="1"/>
+    <text x="30" y="280" fill="#a5b4fc" font-size="11" font-weight="700">The Anti-Pattern We Stamped Out: Long `BEGIN IMMEDIATE` Locks</text>
+    <text x="30" y="297" fill="#cbd5e1" font-size="10">SQLite has NO row locks. Long writes freeze WAL checkpointing and explode disk size.</text>
+    <text x="30" y="311" fill="#34d399" font-size="10" font-weight="600">Replaced with: Single-row atomic CAS lease (daemon_locks, expires_at &lt; now())</text>
+  </g>
+</svg>

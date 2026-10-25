@@ -10,7 +10,7 @@
 | 序号 | 专栏篇目 | 角色隐喻（主管视点） | 核心工程与架构实体 | 对应源码 / ADR / 检查点 |
 | :---: | :--- | :--- | :--- | :--- |
 | **00** | **《如何像主管一样组织 Agent 协作：FerryCat 契约编排中枢的演进之路》** *(当前总篇)* | **会议主持与议席主席**：从人肉传话筒到研发主管，掌控议程与终审裁决 | **AI 工作流编排**、**确定性工作流**、**DAG 状态机**、三方智能体辩论推演 | `docs/audits/2026-10-24-phase-3-multi-agent-consensus-audit_zh.md` |
-| **01** | **《不开重型云服务：为什么我们用 SQLite WAL 极简搭建无锁 Agent 协作底座？》** | **极简会议室搭建**：免配置、无端口冲突、断网可用 | SQLite WAL、单文件总线、`daemon_locks`、短事务 CAS 租约替代行级锁 | `src/engine.ts` (WAL 配置、CAS UPSERT), ADR-0001, ADR-0005 |
+| **01** | **《多 Agent 协作底座用什么好？我们选了 SQLite WAL》** | **极简会议室搭建**：免配置、无端口冲突、断网可用 | SQLite WAL、单文件总线、`node:sqlite`、`daemon_locks`、短事务 CAS 租约替代行级锁 | `src/engine.ts` (WAL 配置、CAS UPSERT), ADR-0001, ADR-0005 |
 | **02** | **《严禁拿旧资料开会：全文件 SHA-256 指纹与 ADR-0004 缓冲，彻底杜绝 Agent 脏读写》** | **参会材料基线校准**：防范下属拿着未存盘旧代码“一本正经胡说八道” | 全文件 SHA-256、首尾行指纹、TOCTOU 防御、ADR-0004 1 击软失败缓冲 | `src/fingerprint.ts`, `src/engine.ts` (verifyAllPointers, strike buffer), ADR-0004 |
 | **03** | **《多个下属并发抢单怎么办？基于 UUID 独占租约令牌的无锁并发治理》** | **抢麦发言防撞车**：多 Worker 并发抢单不打架、不冒充、不串单 | UUID 独占租约令牌 (`claim_token`)、无锁乐观锁、同 Agent 多实例隔离 | `src/engine.ts` (pollNextTask CAS, loadClaimedContractForHolder), FC-301 |
 | **04** | **《防范员工开会开到失联：At-most-once 隐性 P0 与自动心跳 / 超时残片打捞机制》** | **任务开小差看门狗**：长任务超时不再直接蒸发，自动续期并强保产物 | 自动心跳保活 (Heartbeat Keep-Alive)、At-most-once 丢产物修复、`recordSalvage`、`salvaged_result_json` | `src/supervisor.ts` (executeTaskAndFulfill, tick), `src/engine.ts`, CK-01, CK-02, CK-07 |
