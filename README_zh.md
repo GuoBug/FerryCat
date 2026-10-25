@@ -120,6 +120,7 @@ MCP 官方的 `Tasks` 规范（2025-11 / 2026-07）解决的是**单条 `Client 
 ### 6. 威胁模型与安全边界声明 (同机同用户受信 IPC)
 - **环境信任假设**：FerryCat 定位为**面向同机同操作系统用户的跨宿主 AI 开发者协作总线**。所有 IDE 宿主与 Worker 均运行在同一本地用户权限下，共享本地工作区（`workspace_root`）与本地 SQLite 文件（`~/.ferrycat/mesh.db`）。
 - **防护范畴**：双端路径防逃逸（`assertSafePointerPath`）与敏感文件模式黑名单旨在防范跨宿主误触敏感配置（如 `.env`、SSH 密钥）、软链接越界与无意识的目录逃逸。
+- **守护进程执行面**：在守护进程模式（`ferrycat-cli daemon`）下，处理脚本通过 `execFile` 直接执行。`ferrycat.config.json` 或处理脚本所在目录的写权限等价于宿主代码执行权限（详见 ADR-0005 §2.2），请确保配置文件置于本地受信任路径。
 - **非防护目标**：FerryCat **不作为**面向不受信外部网络、多租户强隔离或恶意本地进程伪造 `AGENT_NAME` 的零信任安全网关。
 
 ---
@@ -128,7 +129,44 @@ MCP 官方的 `Tasks` 规范（2025-11 / 2026-07）解决的是**单条 `Client 
 
 1. **两端不共享同一本地文件系统**：FerryCat 依赖按引用传递文件指针（Context Offloading by Reference），要求双方能访问同一份 `workspace_root`。
 2. **单轮简单问答即可解决的任务**：每次跨宿主交接需要 3 次人工窗口切换（约 15~25 秒操作开销），简单问题直接在单个 IDE 内完成即可。
-3. **需要无人值守全自动流水线的场景**：桌面 IDE 宿主受限于请求-响应模型，无法在空闲时被 MCP 服务端主动推流唤醒；若需无人值守编排，请使用独立的 DAG 状态机工作流引擎（如 [PatchCat](https://github.com/GuoBug/ai-prompt-orchestrator)）。
+3. **跨步骤复杂有向图编排**：FerryCat 的守护进程（`ferrycat-cli daemon`）负责同机多 Agent 之间的单步契约分发与进程生命周期托管；若需跨多步骤的复杂动态 DAG 有向无环图分支编排，请使用专门的工作流引擎（如 [PatchCat](https://github.com/GuoBug/ai-prompt-orchestrator)）。
+
+---
+
+## 守护进程与声明式处理 (Controlled Daemon, ADR-0005)
+
+FerryCat 支持受控后台守护进程，通过 SQLite 微事务 CAS 租约锁实现多进程安全抢占与故障转移，并强制通过 `ferrycat.config.json` 静态绑定脚本处理器：
+
+```bash
+# 单次轮询分发并执行已声明的处理脚本
+ferrycat-cli daemon --config ./ferrycat.config.json --once
+
+# 启动后台守护主循环
+ferrycat-cli daemon --config ./ferrycat.config.json
+```
+
+配置文件形态示例（`ferrycat.config.json`）：
+```json
+{
+  "version": 1,
+  "daemon": {
+    "poll_interval_ms": 1000,
+    "lease_ttl_sec": 30,
+    "heartbeat_interval_ms": 10000,
+    "notify": true
+  },
+  "agents": {
+    "workbuddy": {
+      "handlers": {
+        "code_review": {
+          "exec_file": "./scripts/review-handler.js",
+          "pass_env": ["CUSTOM_ANALYZER_PATH"]
+        }
+      }
+    }
+  }
+}
+```
 
 ---
 

@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "daemon": {
+    "lock_id": "ferrycat-primary-daemon",
+    "lease_ttl_sec": 30,
+    "heartbeat_interval_ms": 5000,
+    "poll_interval_ms": 1000,
+    "notify": true
+  },
+  "agents": {
+    "workbuddy": {
+      "handlers": {
+        "code_review": {
+          "exec_file": "./scripts/review-handler.js",
+          "pass_env": ["CUSTOM_ANALYZER_PATH"]
+        }
+      }
+    },
+    "codex-critic": {
+      "handlers": {
+        "architecture_audit": {
+          "exec_file": "./scripts/codex-worker.cjs",
+          "pass_env": ["CODEX_BIN", "USERPROFILE", "APPDATA", "LOCALAPPDATA"]
+        }
+      }
+    }
+  }
+}

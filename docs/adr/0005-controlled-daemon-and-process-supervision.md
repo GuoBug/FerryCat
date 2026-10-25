@@ -60,7 +60,29 @@ We reverse the rejection of background daemons, but strictly refuse to slide int
 
 ### 2.2 Security Hardening: `ferrycat.config.json` Handler Whitelist
 - **Ban Freeform Shells**: In daemon mode, arbitrary shell commands via `--exec` are strictly disabled by default.
-- **Whitelist File Handlers**: Task handlers must map to statically configured files (`.js`, `.ts`, `.ps1`, `.sh`) invoked via `execFile`, eliminating shell interpolation escapes.
+- **Whitelist File Handlers**: Task handlers must map to statically configured files (`.js`, `.ts`, `.ps1`, `.sh`) invoked via `execFile`, eliminating shell interpolation escapes (config write permissions equal host execution privileges).
+- **Declarative Configuration Schema (`ferrycat.config.json`)**:
+  ```json
+  {
+    "version": 1,
+    "daemon": {
+      "poll_interval_ms": 1000,
+      "lease_ttl_sec": 30,
+      "heartbeat_interval_ms": 10000,
+      "notify": true
+    },
+    "agents": {
+      "workbuddy": {
+        "handlers": {
+          "code_review": {
+            "exec_file": "./scripts/review-handler.js",
+            "pass_env": ["CUSTOM_ANALYZER_PATH"]
+          }
+        }
+      }
+    }
+  }
+  ```
 
 ### 2.3 Integrated Process Supervision
 The daemon inherits all Phase 3 Step 0 runtime safeguards:

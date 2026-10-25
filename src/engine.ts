@@ -360,18 +360,25 @@ export class FerryCatEngine {
        WHERE id = ? AND status = 'SUBMITTED'`
     );
 
-    const candidatesStmt = this.db.prepare(
-      `SELECT * FROM contracts
-       WHERE target_agent = ? AND status = 'SUBMITTED'
-       ORDER BY ${QUEUE_START_SQL} ASC, rowid ASC
-       LIMIT 10`
-    );
+    const taskTypesFilter = input.task_types && input.task_types.length > 0 ? input.task_types : null;
+    let candidatesQuery = `SELECT * FROM contracts WHERE target_agent = ? AND status = 'SUBMITTED'`;
+    if (taskTypesFilter) {
+      const placeholders = taskTypesFilter.map(() => '?').join(',');
+      candidatesQuery += ` AND task_type IN (${placeholders})`;
+    }
+    candidatesQuery += ` ORDER BY ${QUEUE_START_SQL} ASC, rowid ASC LIMIT 10`;
+
+    const candidatesStmt = this.db.prepare(candidatesQuery);
+    const queryParams: Array<string | number> = [agentId];
+    if (taskTypesFilter) {
+      queryParams.push(...taskTypesFilter);
+    }
 
     let lastStaleError: PollNextTaskResult['stale_error'] | undefined;
     let anyCandidatesSeen = false;
 
     while (true) {
-      const candidates = candidatesStmt.all(agentId) as unknown as ContractRow[];
+      const candidates = candidatesStmt.all(...queryParams) as unknown as ContractRow[];
       if (candidates.length === 0) {
         break;
       }
@@ -398,34 +405,42 @@ export class FerryCatEngine {
           );
         } catch (err) {
           const errMsg = `UNEXPECTED_FS_ERROR: ${err instanceof Error ? err.message : String(err)}`;
-          this.db
+          // CAS-protected state transition to prevent racing with concurrent timeout/cancellation
+          const updRes = this.db
             .prepare(
-              `UPDATE contracts SET status = 'POINTER_STALE', error_reason = ? WHERE id = ?`
+              `UPDATE contracts
+               SET status = 'POINTER_STALE', error_reason = ?
+               WHERE id = ? AND status = 'CLAIMED' AND claim_token = ?`
             )
-            .run(errMsg, candidate.id);
-          lastStaleError = {
-            contract_id: candidate.id,
-            reason: 'UNEXPECTED_FS_ERROR',
-            message: `Contract "${candidate.id}" marked POINTER_STALE due to filesystem error (${errMsg}).`,
-          };
+            .run(errMsg, candidate.id, claimToken);
+          if (updRes.changes > 0) {
+            lastStaleError = {
+              contract_id: candidate.id,
+              reason: 'UNEXPECTED_FS_ERROR',
+              message: `Contract "${candidate.id}" marked POINTER_STALE due to filesystem error (${errMsg}).`,
+            };
+          }
           continue;
         }
 
         if (!verification.valid) {
           const errorReason = `${verification.reason}: ${verification.detail}`;
-          this.db
+          // CAS-protected state transition to prevent racing with concurrent timeout/cancellation
+          const updRes = this.db
             .prepare(
               `UPDATE contracts
                SET status = 'POINTER_STALE', error_reason = ?
-               WHERE id = ?`
+               WHERE id = ? AND status = 'CLAIMED' AND claim_token = ?`
             )
-            .run(errorReason, candidate.id);
+            .run(errorReason, candidate.id, claimToken);
 
-          lastStaleError = {
-            contract_id: candidate.id,
-            reason: verification.reason!,
-            message: `Contract "${candidate.id}" rejected as POINTER_STALE (${errorReason}). Please ask requester "${candidate.requester_agent}" to re-dispatch with fresh file fingerprints.`,
-          };
+          if (updRes.changes > 0) {
+            lastStaleError = {
+              contract_id: candidate.id,
+              reason: verification.reason!,
+              message: `Contract "${candidate.id}" rejected as POINTER_STALE (${errorReason}). Please ask requester "${candidate.requester_agent}" to re-dispatch with fresh file fingerprints.`,
+            };
+          }
           continue;
         }
 
@@ -1009,13 +1024,21 @@ export class FerryCatEngine {
       };
     }
 
-    const res = this.db
-      .prepare(
-        `UPDATE contracts
-         SET status = 'FAILED', error_reason = ?, completed_at = ?
-         WHERE id = ? AND status = 'CLAIMED' AND target_agent = ?`
-      )
-      .run(`WORKER_FAILED: ${reason}`, nowMs, row.id, agentId);
+    const failSql =
+      row.claim_token !== null && row.claim_token !== undefined
+        ? `UPDATE contracts
+           SET status = 'FAILED', error_reason = ?, completed_at = ?
+           WHERE id = ? AND status = 'CLAIMED' AND target_agent = ? AND claim_token = ?`
+        : `UPDATE contracts
+           SET status = 'FAILED', error_reason = ?, completed_at = ?
+           WHERE id = ? AND status = 'CLAIMED' AND target_agent = ?`;
+
+    const failParams: Array<string | number> =
+      row.claim_token !== null && row.claim_token !== undefined
+        ? [`WORKER_FAILED: ${reason}`, nowMs, row.id, agentId, row.claim_token]
+        : [`WORKER_FAILED: ${reason}`, nowMs, row.id, agentId];
+
+    const res = this.db.prepare(failSql).run(...failParams);
 
     if (Number(res.changes) !== 1) {
       throw new Error(

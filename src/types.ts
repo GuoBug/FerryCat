@@ -101,6 +101,7 @@ export interface DispatchContractResult {
 
 export interface PollNextTaskInput {
   agent_id?: string;
+  task_types?: TaskType[];
 }
 
 export interface PollNextTaskResult {

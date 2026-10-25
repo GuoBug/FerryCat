@@ -5,7 +5,7 @@
   <b>中文</b>
 </p>
 
-- **状态**: Accepted (已通过)
+- **状态**: Accepted（部分被 [ADR-0005](0005-controlled-daemon-and-process-supervision_zh.md) 关于受控后台守护进程的规约所替代与升级） (已通过)
 - **日期**: 2026-10-23
 - **决策人**: 郭强 (Guo Qiang)
 - **涉及模块**: 契约存储引擎 (`src/engine.ts`)、指纹校验器 (`src/fingerprint.ts`)、CLI 调度器 (`src/cli.ts`)、双端交互层

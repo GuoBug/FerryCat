@@ -456,8 +456,8 @@ function parseArgs(argv: string[]): ParsedCliArgs {
       flagOverrides.config = requireFlagValue(token, rest[++i]);
     } else if (token === '--lease-ttl') {
       const ttl = Number(requireFlagValue('--lease-ttl', rest[++i]));
-      if (!Number.isInteger(ttl) || ttl <= 0) {
-        throw new Error('Invalid --lease-ttl: must be a positive integer.');
+      if (!Number.isInteger(ttl) || ttl < 5) {
+        throw new Error('Invalid --lease-ttl: must be an integer >= 5 seconds.');
       }
       flagOverrides.lease_ttl_sec = ttl;
     } else if (token === '--no-notify') {

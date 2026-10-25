@@ -1,12 +1,14 @@
 /**
- * FerryCat Controlled Daemon (Phase 3 Step 1, ADR-0005).
+ * FerryCat Controlled Daemon (Phase 3 Step 1, ADR-0005 Hardened).
  *
  * Provides a production-grade, background-ready execution orchestrator:
  *   - Short-transaction CAS leases on `daemon_locks` table.
- *   - Configuration file loading (`ferrycat.config.json` / `~/.ferrycat/config.json`).
- *   - Strict handler dispatch using script files (`--exec-file`) mapped to task types.
- *   - Full integration with supervisor process lifecycle & safety checkpoints (CK-01 ~ CK-09).
- *   - Graceful shutdown on SIGINT/SIGTERM with lease release and child tree termination.
+ *   - Cryptographically random per-process owner token (prevents split-brain on identical configs).
+ *   - Automatic process tree termination on lease loss (CK-04/05).
+ *   - Safe heartbeat intervals clamped to <= lease_ttl_sec / 2.
+ *   - Robust heartbeat exception recovery.
+ *   - Declarative handler execution with args and environment forwarding.
+ *   - Graceful shutdown on SIGINT/SIGTERM.
  */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -73,9 +75,16 @@ export function loadFerryCatConfig(customConfigPath?: string): {
 }
 
 export function notifyOperator(title: string, message: string): void {
-  const timestamp = new Date().toISOString();
-  // Always emit structured line to stderr/stdout
-  process.stderr.write(`[FerryCat Daemon Notice] ${timestamp} | ${title}: ${message}\n`);
+  try {
+    const timestamp = new Date().toISOString();
+    // Always emit structured line to stderr/stdout
+    process.stderr.write(`[FerryCat Daemon Notice] ${timestamp} | ${title}: ${message}\n`);
+  } catch (err: unknown) {
+    if (err && typeof err === 'object' && 'code' in err && (err as { code: string }).code === 'EPIPE') {
+      // EPIPE indicates downstream logger closed its pipe early; safe to swallow silently
+      return;
+    }
+  }
 }
 
 export class FerryCatDaemon {
@@ -95,6 +104,7 @@ export class FerryCatDaemon {
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
   private signalCleanupRegistered: boolean = false;
+  private activeInFlightContract: { contract_id: string; target_agent: string; claim_token?: string } | null = null;
 
   constructor(options: DaemonOptions = {}) {
     const { config, resolvedPath } = loadFerryCatConfig(options.configPath);
@@ -104,12 +114,22 @@ export class FerryCatDaemon {
     this.engine = new FerryCatEngine({ dbPath: options.dbPath });
 
     this.lockId = options.lockId ?? config.daemon.lock_id ?? 'global';
-    this.leaseTtlSec = options.leaseTtlSec ?? config.daemon.lease_ttl_sec ?? 30;
-    this.heartbeatIntervalMs =
-      options.heartbeatIntervalMs ?? config.daemon.heartbeat_interval_ms ?? 5000;
+    
+    // Ensure lease TTL is at least 5 seconds
+    const reqTtl = options.leaseTtlSec ?? config.daemon.lease_ttl_sec ?? 30;
+    this.leaseTtlSec = Math.max(5, reqTtl);
+
+    // Enforce heartbeat interval <= leaseTtl / 2 to prevent false expirations
+    const reqHeartbeat = options.heartbeatIntervalMs ?? config.daemon.heartbeat_interval_ms ?? 5000;
+    const maxHeartbeat = Math.floor((this.leaseTtlSec * 1000) / 2);
+    this.heartbeatIntervalMs = Math.min(reqHeartbeat, maxHeartbeat);
+
     this.pollIntervalMs = options.pollIntervalMs ?? config.daemon.poll_interval_ms ?? 1000;
-    this.ownerToken =
-      config.daemon.owner_token ?? `daemon-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
+
+    // Critical Finding 1: Never accept a static shared owner_token across daemon processes.
+    // Always generate a unique cryptographic token per runtime instance.
+    this.ownerToken = `daemon-${process.pid}-${crypto.randomBytes(8).toString('hex')}`;
+
     this.targetAgentFilter = options.targetAgent;
     this.notifyEnabled = options.notify ?? config.daemon.notify ?? true;
   }
@@ -134,49 +154,101 @@ export class FerryCatDaemon {
   }
 
   public acquireLease(): boolean {
-    const res = this.engine.acquireDaemonLease({
-      lock_id: this.lockId,
-      owner_token: this.ownerToken,
-      ttl_sec: this.leaseTtlSec,
-      metadata: {
-        pid: process.pid,
-        hostname: os.hostname(),
-        platform: process.platform,
-        config_path: this.configPath,
-      },
-    });
+    try {
+      const res = this.engine.acquireDaemonLease({
+        lock_id: this.lockId,
+        owner_token: this.ownerToken,
+        ttl_sec: this.leaseTtlSec,
+        metadata: {
+          pid: process.pid,
+          hostname: os.hostname(),
+          platform: process.platform,
+          config_path: this.configPath,
+        },
+      });
 
-    if (res.ok) {
-      this.isLeader = true;
-      return true;
+      if (res.ok) {
+        this.isLeader = true;
+        return true;
+      }
+      this.isLeader = false;
+      return false;
+    } catch (err) {
+      this.isLeader = false;
+      if (this.notifyEnabled) {
+        notifyOperator('Lease Error', `Acquire lease error: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      return false;
     }
-    this.isLeader = false;
-    return false;
   }
 
   public renewLease(): boolean {
     if (!this.isLeader) return false;
-    const res = this.engine.renewDaemonLease({
-      lock_id: this.lockId,
-      owner_token: this.ownerToken,
-      ttl_sec: this.leaseTtlSec,
-    });
-    if (!res.ok) {
+    try {
+      const res = this.engine.renewDaemonLease({
+        lock_id: this.lockId,
+        owner_token: this.ownerToken,
+        ttl_sec: this.leaseTtlSec,
+      });
+
+      if (!res.ok) {
+        // Critical WorkBuddy P1 Fix: When lease is lost, don't kill active contract to FAILED.
+        // First voluntarily release in-flight contract back to queue tail so new leader can claim it!
+        this.isLeader = false;
+        if (this.activeInFlightContract) {
+          try {
+            this.engine.releaseContract({
+              contract_id: this.activeInFlightContract.contract_id,
+              agent_id: this.activeInFlightContract.target_agent,
+              claim_token: this.activeInFlightContract.claim_token,
+              reason: 'DAEMON_LEASE_LOST',
+            });
+          } catch {
+            // best-effort release
+          }
+          this.activeInFlightContract = null;
+        }
+        terminateActiveChildrenSync();
+        if (this.notifyEnabled) {
+          notifyOperator('Lease Lost', `Failed to renew lease '${this.lockId}': ${res.message}. In-flight contract released and children terminated.`);
+        }
+        return false;
+      }
+      return true;
+    } catch (err) {
+      // WorkBuddy Finding: On SQLite/IO exception, demote to non-leader, backoff, and release in-flight contract
       this.isLeader = false;
+      if (this.activeInFlightContract) {
+        try {
+          this.engine.releaseContract({
+            contract_id: this.activeInFlightContract.contract_id,
+            agent_id: this.activeInFlightContract.target_agent,
+            claim_token: this.activeInFlightContract.claim_token,
+            reason: 'DAEMON_HEARTBEAT_EXCEPTION',
+          });
+        } catch {
+          // best-effort release
+        }
+        this.activeInFlightContract = null;
+      }
+      terminateActiveChildrenSync();
       if (this.notifyEnabled) {
-        notifyOperator('Lease Lost', `Failed to renew lease '${this.lockId}': ${res.message}`);
+        notifyOperator('Lease Error', `Heartbeat exception: ${err instanceof Error ? err.message : String(err)}. Contract released and children terminated.`);
       }
       return false;
     }
-    return true;
   }
 
   public releaseLease(): void {
     if (this.isLeader) {
-      this.engine.releaseDaemonLease({
-        lock_id: this.lockId,
-        owner_token: this.ownerToken,
-      });
+      try {
+        this.engine.releaseDaemonLease({
+          lock_id: this.lockId,
+          owner_token: this.ownerToken,
+        });
+      } catch {
+        // best-effort cleanup on shutdown
+      }
       this.isLeader = false;
     }
   }
@@ -239,8 +311,24 @@ export class FerryCatDaemon {
     status?: string;
     reason?: string;
   }> {
+    // Determine configured task types for this agent to avoid claiming unhandled tasks (WorkBuddy P1)
+    let eligibleTaskTypes: Array<'code_review' | 'architecture_audit' | 'implementation' | 'test_generation'> | undefined;
+    if (agentId && this.config.agents[agentId]) {
+      const agentCfg = this.config.agents[agentId];
+      if (!agentCfg.default_handler && agentCfg.handlers) {
+        eligibleTaskTypes = Object.keys(agentCfg.handlers) as Array<
+          'code_review' | 'architecture_audit' | 'implementation' | 'test_generation'
+        >;
+        if (eligibleTaskTypes.length === 0) {
+          // If agent has no handlers and no default_handler, skip polling this agent completely
+          return { processed: false, reason: 'NO_HANDLERS_CONFIGURED' };
+        }
+      }
+    }
+
     const pollResult: PollNextTaskResult = this.engine.pollNextTask({
       agent_id: agentId,
+      task_types: eligibleTaskTypes,
     });
 
     if (!pollResult.has_task || !pollResult.contract || pollResult.status !== 'CLAIMED') {
@@ -251,8 +339,8 @@ export class FerryCatDaemon {
     const handler = this.resolveHandler(contract.target_agent, contract.task_type);
 
     if (!handler) {
-      // No authorized handler declared for this task in config
-      const warningMsg = `No handler configured in ferrycat.config.json for agent '${contract.target_agent}' task '${contract.task_type}'. Release contract back to queue.`;
+      // Fallback: If somehow claimed without handler (e.g. default_handler was missing), release back to queue cleanly
+      const warningMsg = `No handler configured in ferrycat.config.json for agent '${contract.target_agent}' task '${contract.task_type}'. Releasing contract back to queue.`;
       if (this.notifyEnabled) {
         notifyOperator('Unhandled Task', warningMsg);
       }
@@ -260,6 +348,7 @@ export class FerryCatDaemon {
         contract_id: contract.contract_id,
         agent_id: contract.target_agent,
         claim_token: contract.claim_token,
+        reason: `NO_HANDLER_CONFIGURED: Task type '${contract.task_type}' not handled by this node.`,
       });
       return {
         processed: false,
@@ -275,28 +364,40 @@ export class FerryCatDaemon {
       );
     }
 
-    const execResult = await executeTaskAndFulfill(
-      this.engine,
-      contract,
-      {
-        execFile: handler.exec_file,
-        passEnv: handler.pass_env,
-      },
-      {}
-    );
-
-    if (this.notifyEnabled) {
-      notifyOperator(
-        'Task Finished',
-        `Contract ${contract.contract_id} concluded with status '${execResult.status}' (ok=${execResult.ok})`
-      );
-    }
-
-    return {
-      processed: true,
+    // Track active in-flight contract for graceful lease loss failover
+    this.activeInFlightContract = {
       contract_id: contract.contract_id,
-      status: execResult.status,
+      target_agent: contract.target_agent,
+      claim_token: contract.claim_token,
     };
+
+    try {
+      // Forward configured args and pass_env (contract's own exec_ttl_sec is authoritative)
+      const execResult = await executeTaskAndFulfill(
+        this.engine,
+        contract,
+        {
+          execFile: handler.exec_file,
+          passEnv: handler.pass_env,
+          args: handler.args,
+        }
+      );
+
+      if (this.notifyEnabled) {
+        notifyOperator(
+          'Task Finished',
+          `Contract ${contract.contract_id} concluded with status '${execResult.status}' (ok=${execResult.ok})`
+        );
+      }
+
+      return {
+        processed: true,
+        contract_id: contract.contract_id,
+        status: execResult.status,
+      };
+    } finally {
+      this.activeInFlightContract = null;
+    }
   }
 
   public async start(): Promise<void> {
@@ -305,8 +406,14 @@ export class FerryCatDaemon {
 
     // Heartbeat ticker loop for lease renewal
     this.heartbeatTimer = setInterval(() => {
-      if (this.isRunning && this.isLeader) {
-        this.renewLease();
+      try {
+        if (this.isRunning && this.isLeader) {
+          this.renewLease();
+        }
+      } catch (err) {
+        if (this.notifyEnabled) {
+          notifyOperator('Heartbeat Ticker Error', err instanceof Error ? err.message : String(err));
+        }
       }
     }, this.heartbeatIntervalMs);
 

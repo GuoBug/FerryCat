@@ -98,23 +98,22 @@
 
 ### 2.2 执行安全收敛：`ferrycat.config.json` 强绑脚本 Handler
 - **禁止自由 Shell**：守护进程在无人值守模式下，**默认严禁使用 `--exec <arbitrary_string>`**。
-- **强绑定可信文件**：所有任务处理必须映射到预先声明的静态脚本文件（`.js`, `.ts`, `.ps1`, `.sh`），通过 `execFile` 直接执行，消除 Shell 引号逃逸与提示词注代码（Prompt Code Injection）风险。
+- **强绑定可信文件**：所有任务处理必须映射到预先声明的静态脚本文件（`.js`, `.ts`, `.ps1`, `.sh`），通过 `execFile` 直接执行，将注入面从任意 Shell 字符串收敛到受信配置与脚本文件（配置文件写入权限等价于宿主执行权限）。
 - **配置文件形态 (`ferrycat.config.json`)**：
   ```json
   {
-    "version": "1.0",
+    "version": 1,
     "daemon": {
       "poll_interval_ms": 1000,
       "lease_ttl_sec": 30,
       "heartbeat_interval_ms": 10000,
-      "max_concurrent_tasks": 1
+      "notify": true
     },
     "agents": {
       "workbuddy": {
         "handlers": {
           "code_review": {
             "exec_file": "./scripts/review-handler.js",
-            "exec_ttl_sec": 600,
             "pass_env": ["CUSTOM_ANALYZER_PATH"]
           }
         }

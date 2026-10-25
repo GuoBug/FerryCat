@@ -5,7 +5,7 @@
   <a href="0003-gui-cli-hybrid-architecture_zh.md">中文</a>
 </p>
 
-- **Status**: Accepted
+- **Status**: Accepted (Partially superseded by [ADR-0005](0005-controlled-daemon-and-process-supervision.md) regarding background daemon supervision)
 - **Date**: 2026-10-23
 - **Decider**: Guo Qiang (GuoBug)
 - **Scope**: Contract Engine (`src/engine.ts`), Fingerprint Validator (`src/fingerprint.ts`), CLI Dispatcher (`src/cli.ts`), Hybrid Interaction Protocol

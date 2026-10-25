@@ -36,11 +36,18 @@ export interface ExecSpec {
   execFile?: string;
   /** Explicit, user-consented env var names forwarded to the child despite the allowlist. */
   passEnv?: string[];
+  /** Optional argv arguments forwarded directly to the executable (when using execFile). */
+  args?: string[];
 }
 
 export interface SupervisorOptions {
   /** Override heartbeat tick cadence (tests). Default: min(60s, exec_ttl / 3). */
   heartbeatIntervalMs?: number;
+  /**
+   * Optional upper bound on child execution window TTL in seconds.
+   * NOTE: The contract's own `exec_ttl_sec` remains the primary authoritative database window.
+   */
+  execTtlSec?: number;
   /** Grace period between SIGTERM and SIGKILL. Default: clamp(exec_ttl / 10, 200ms, 3s). */
   killGraceMs?: number;
   /** Max captured stdout bytes before the child is terminated. Default: 10MB. */
@@ -188,26 +195,27 @@ export interface SupervisedChild {
 const activeChildren = new Set<SupervisedChild>();
 
 function resolveExecTarget(spec: ExecSpec): { command: string; args: string[]; shell: boolean } {
+  const extraArgs = spec.args ?? [];
   if (spec.execFile) {
     const script = path.resolve(expandTilde(spec.execFile));
     const ext = path.extname(script).toLowerCase();
     if (ext === '.js' || ext === '.mjs' || ext === '.cjs') {
-      return { command: process.execPath, args: [script], shell: false };
+      return { command: process.execPath, args: [script, ...extraArgs], shell: false };
     }
     if (ext === '.ts') {
-      return { command: process.execPath, args: ['--import', 'tsx', script], shell: false };
+      return { command: process.execPath, args: ['--import', 'tsx', script, ...extraArgs], shell: false };
     }
     if (ext === '.ps1') {
       return {
         command: 'powershell',
-        args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script],
+        args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, ...extraArgs],
         shell: false,
       };
     }
     if (ext === '.sh') {
-      return { command: 'sh', args: [script], shell: false };
+      return { command: 'sh', args: [script, ...extraArgs], shell: false };
     }
-    return { command: script, args: [], shell: false };
+    return { command: script, args: [...extraArgs], shell: false };
   }
   // --exec: explicit shell compatibility mode (FC-303), unchanged semantics.
   return { command: spec.execCmd!, args: [], shell: true };
@@ -336,7 +344,10 @@ export async function executeTaskAndFulfill(
     }
   };
 
-  const ttlMs = contract.exec_ttl_sec * 1000;
+  const effectiveTtlSec = opts.execTtlSec
+    ? Math.min(contract.exec_ttl_sec, opts.execTtlSec)
+    : contract.exec_ttl_sec;
+  const ttlMs = effectiveTtlSec * 1000;
   const tickMs = opts.heartbeatIntervalMs ?? Math.max(100, Math.min(60000, Math.floor(ttlMs / 3)));
   const graceMs = opts.killGraceMs ?? clamp(Math.floor(ttlMs / 10), 200, 3000);
   // The guard fires early enough to terminate (grace) AND report failure before the window closes.
@@ -564,8 +575,11 @@ export async function executeTaskAndFulfill(
 
   if (exit.code !== 0) {
     salvageNow('NON_ZERO_EXIT');
+    const exitDesc = exit.signal
+      ? `terminated by signal ${exit.signal}`
+      : `failed with code ${exit.code ?? 1}`;
     return failAfterExit(
-      `External exec command failed with code ${exit.code ?? exit.signal ?? 1}: ${stderr || 'no stderr output'}`
+      `External exec command ${exitDesc}: ${stderr || 'no stderr output'}`
     );
   }
 

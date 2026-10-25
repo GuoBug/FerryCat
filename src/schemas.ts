@@ -380,7 +380,6 @@ export const HandlerDefinitionSchema = z
       .min(1)
       .max(1024)
       .describe('Absolute or workspace-relative path to handler script file (disallows arbitrary shell execution)'),
-    exec_ttl_sec: z.number().int().min(5).max(7200).optional(),
     pass_env: z.array(z.string().min(1).max(128)).optional(),
     args: z.array(z.string()).optional(),
   })
@@ -402,10 +401,16 @@ export const DaemonConfigSchema = z
     lease_ttl_sec: z.number().int().min(5).max(300).default(30),
     heartbeat_interval_ms: z.number().int().min(1000).max(30000).default(5000),
     poll_interval_ms: z.number().int().min(200).max(30000).default(1000),
-    owner_token: z.string().min(1).max(128).optional(),
     notify: z.boolean().default(true),
   })
-  .strict();
+  .strict()
+  .refine(
+    (data) => data.heartbeat_interval_ms <= Math.floor((data.lease_ttl_sec * 1000) / 2),
+    {
+      message: 'heartbeat_interval_ms must be at most half of lease_ttl_sec (e.g. heartbeat <= TTL / 2) to ensure safe lease renewal margin',
+      path: ['heartbeat_interval_ms'],
+    }
+  );
 
 export const FerryCatConfigFileSchema = z
   .object({

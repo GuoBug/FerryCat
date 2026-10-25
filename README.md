@@ -120,6 +120,7 @@ Holder-side lifecycle controls on a `CLAIMED` contract (all require `agent_id ==
 ### 6. Threat Model & Security Assumptions (Local Workstation IPC)
 - **Assumed Trust Environment**: FerryCat is intentionally designed as a **Trusted Local Workstation Bus** bridging isolated IDE hosts operating under the **same OS user account**. Callers and workers share the local file system (`workspace_root`) and SQLite database (`~/.ferrycat/mesh.db`).
 - **Defense Scope**: Path containment (`assertSafePointerPath`) and sensitive file pattern filters prevent unintentional workspace escapes, symlink traversals, or accidental leakage of credentials/secret files during handoffs.
+- **Daemon Execution Surface**: In daemon mode (`ferrycat-cli daemon`), handler scripts are invoked directly via `execFile`. Write permissions to `ferrycat.config.json` or handler script paths are equivalent to host execution privileges (ADR-0005 §2.2). Keep configurations local and version-controlled.
 - **Out of Scope (Non-Goals)**: FerryCat does **not** provide adversarial sandboxing, multi-tenant isolation, or network authorization against malicious local processes or adversarial agents spoofing `AGENT_NAME`.
 
 ---
@@ -128,7 +129,44 @@ Holder-side lifecycle controls on a `CLAIMED` contract (all require `agent_id ==
 
 1. **Disjoint File Systems**: FerryCat offloads context by file reference; both hosts must share access to the same local `workspace_root`.
 2. **Trivial Single-Turn Queries**: Each cross-host handoff involves 3 explicit human window switches (~15–25s overhead).
-3. **Unattended Background Pipelines**: Desktop IDE hosts follow a request-response model and cannot be woken up asynchronously by an idle MCP server. For unattended multi-step pipelines, use a standalone DAG workflow engine such as [PatchCat](https://github.com/GuoBug/ai-prompt-orchestrator).
+3. **Multi-Step Dynamic DAG Pipelines**: FerryCat's background daemon (`ferrycat-cli daemon`, ADR-0005) manages single-step contract dispatch and supervised worker lifecycles; for complex multi-step branching DAG orchestrations, use dedicated DAG workflow engines such as [PatchCat](https://github.com/GuoBug/ai-prompt-orchestrator).
+
+---
+
+## Controlled Daemon & Declarative Handlers (ADR-0005)
+
+FerryCat provides a controlled daemon mode governed by SQLite microsecond CAS leases on `daemon_locks` and declarative scripts defined in `ferrycat.config.json`:
+
+```bash
+# Run a single dispatch cycle with declared handlers
+ferrycat-cli daemon --config ./ferrycat.config.json --once
+
+# Start continuous daemon loop
+ferrycat-cli daemon --config ./ferrycat.config.json
+```
+
+Example `ferrycat.config.json`:
+```json
+{
+  "version": 1,
+  "daemon": {
+    "poll_interval_ms": 1000,
+    "lease_ttl_sec": 30,
+    "heartbeat_interval_ms": 10000,
+    "notify": true
+  },
+  "agents": {
+    "workbuddy": {
+      "handlers": {
+        "code_review": {
+          "exec_file": "./scripts/review-handler.js",
+          "pass_env": ["CUSTOM_ANALYZER_PATH"]
+        }
+      }
+    }
+  }
+}
+```
 
 ---
 

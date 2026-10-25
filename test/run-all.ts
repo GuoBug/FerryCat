@@ -1325,7 +1325,7 @@ async function test11_PhaseBCliErgonomicsAndToctouBuffer(): Promise<void> {
 
     const helpGlobal = await runCli(['--help']);
     assert.strictEqual(helpGlobal.code, 0);
-    assert.ok(helpGlobal.stdout.includes('FerryCat CLI v0.3.2'));
+    assert.ok(helpGlobal.stdout.includes('FerryCat CLI v0.3.3'));
 
     const helpFulfill = await runCli(['help', 'fulfill']);
     assert.strictEqual(helpFulfill.code, 0);
@@ -1333,7 +1333,7 @@ async function test11_PhaseBCliErgonomicsAndToctouBuffer(): Promise<void> {
 
     const verRes = await runCli(['--version']);
     assert.strictEqual(verRes.code, 0);
-    assert.strictEqual(verRes.stdout.trim(), '0.3.2');
+    assert.strictEqual(verRes.stdout.trim(), '0.3.3');
 
     // Stdin dispatch with UTF-8 BOM (\uFEFF) via --file -
     const stdinDispatchPayload =
@@ -2213,6 +2213,59 @@ async function test14_Step1ControlledDaemonAndCasLeases(): Promise<void> {
 
     daemon.releaseLease();
     daemon.engine.close();
+
+    // 14F: Multi-Daemon Token Independence & Selective Task Polling (WorkBuddy P1 Fix)
+    const daemon1 = new FerryCatDaemon({ configPath, dbPath, notify: false });
+    const daemon2 = new FerryCatDaemon({ configPath, dbPath, notify: false });
+    assert.notStrictEqual(daemon1.ownerToken, daemon2.ownerToken);
+    assert.strictEqual(daemon1.acquireLease(), true);
+    // daemon2 must not acquire because ownerTokens are cryptographically distinct
+    assert.strictEqual(daemon2.acquireLease(), false);
+
+    // Unhandled task type (code_review) must NOT be claimed by daemon-worker (which only configured implementation)
+    // The contract must stay cleanly in SUBMITTED state for an appropriate worker rather than being killed (P1 fix)
+    const unhandledDispatch = engine.dispatchContract({
+      requester_agent: 'daemon-requester',
+      target_agent: 'daemon-worker',
+      task_type: 'code_review', // Only implementation was configured
+      title: 'Selective task type polling test',
+      context_summary: 'Test selective polling leaves contract in queue',
+      workspace_root: testDir,
+      pointers: [{ path: 'target.ts' }],
+    });
+    const unhandledCycle = await daemon1.pollAndDispatchOnce();
+    assert.strictEqual(unhandledCycle.processed, false);
+    assert.strictEqual(unhandledCycle.reason, 'NO_TASK_AVAILABLE');
+    const inspectedUnhandled = engine.inspectMeshState({ contract_id: unhandledDispatch.contract_id });
+    assert.strictEqual(inspectedUnhandled.contracts[0].status, 'SUBMITTED');
+    console.log('  PASS [14F - Selective Task Polling & Multi-Daemon Token Isolation]: Contracts for unconfigured tasks remain SUBMITTED in queue.');
+
+    // 14G: ADR-0005 Configuration Anti-Drift Verification
+    const { FerryCatConfigFileSchema } = await import('../src/schemas.js');
+    const adrFiles = [
+      path.resolve(__dirname, '../docs/adr/0005-controlled-daemon-and-process-supervision.md'),
+      path.resolve(__dirname, '../docs/adr/0005-controlled-daemon-and-process-supervision_zh.md'),
+    ];
+    for (const adrPath of adrFiles) {
+      const adrContent = fs.readFileSync(adrPath, 'utf8');
+      const jsonMatch = adrContent.match(/```json\s*([\s\S]*?)\s*```/);
+      assert.ok(jsonMatch, 'ADR file ' + path.basename(adrPath) + ' must contain a ```json configuration snippet');
+      const rawJson = JSON.parse(jsonMatch[1]);
+      const parsedAdrConfig = FerryCatConfigFileSchema.parse(rawJson);
+      assert.strictEqual(parsedAdrConfig.version, 1);
+      assert.strictEqual(parsedAdrConfig.daemon.lease_ttl_sec, 30);
+      assert.strictEqual(parsedAdrConfig.agents.workbuddy.handlers.code_review.exec_file, './scripts/review-handler.js');
+    }
+
+    const exampleConfigPath = path.resolve(__dirname, '../ferrycat.config.example.json');
+    const exampleRaw = fs.readFileSync(exampleConfigPath, 'utf8');
+    const parsedExample = FerryCatConfigFileSchema.parse(JSON.parse(exampleRaw));
+    assert.strictEqual(parsedExample.version, 1);
+    console.log('  PASS [14G - ADR-0005 Config Anti-Drift]: Real markdown documentation and example configuration parsed and verified strictly.');
+
+    daemon1.releaseLease();
+    daemon1.engine.close();
+    daemon2.engine.close();
     engine.close();
   } finally {
     cleanup();
