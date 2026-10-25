@@ -11,7 +11,10 @@ import {
 import { validateContractOutput } from './schema-validator.js';
 import { MAX_JSON_PAYLOAD_BYTES, validateJsonPayload } from './schemas.js';
 import type {
+  AcquireDaemonLeaseInput,
+  AcquireDaemonLeaseResult,
   ContractRow,
+  DaemonLockRow,
   DispatchContractInput,
   DispatchContractResult,
   ExtendTtlInput,
@@ -26,6 +29,10 @@ import type {
   PollNextTaskResult,
   ReleaseContractInput,
   ReleaseContractResult,
+  ReleaseDaemonLeaseInput,
+  ReleaseDaemonLeaseResult,
+  RenewDaemonLeaseInput,
+  RenewDaemonLeaseResult,
   TaskType,
   VerifyContractInput,
   VerifyContractResult,
@@ -177,6 +184,14 @@ export class FerryCatEngine {
 
       CREATE INDEX IF NOT EXISTS idx_contracts_poll
       ON contracts(target_agent, status, created_at);
+
+      CREATE TABLE IF NOT EXISTS daemon_locks (
+        id TEXT PRIMARY KEY,
+        owner_token TEXT NOT NULL,
+        heartbeat_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        metadata_json TEXT
+      );
     `);
 
     // Additive, idempotent column migrations for databases created by older FerryCat versions.
@@ -1165,6 +1180,119 @@ export class FerryCatEngine {
       total_returned: formatted.length,
       contracts: formatted,
     };
+  }
+
+  // =========================================================================
+  // Daemon CAS Lease Management (ADR-0005)
+  // Single-statement atomic micro-transactions (Zero multi-step lock starvation)
+  // =========================================================================
+
+  public acquireDaemonLease(input: AcquireDaemonLeaseInput): AcquireDaemonLeaseResult {
+    const lockId = (input.lock_id ?? 'global').trim();
+    const ownerToken = input.owner_token?.trim();
+    if (!ownerToken) {
+      throw new Error('owner_token is required to acquire a daemon lease.');
+    }
+    const ttlSec = input.ttl_sec && input.ttl_sec > 0 ? input.ttl_sec : 30;
+    const nowMs = Date.now();
+    const expiresAt = nowMs + ttlSec * 1000;
+    const metadataJson = input.metadata ? JSON.stringify(input.metadata) : null;
+
+    // Single-statement atomic UPSERT with CAS condition:
+    // Acquire if new OR existing lease has expired OR same owner is re-acquiring.
+    const stmt = this.db.prepare(`
+      INSERT INTO daemon_locks(id, owner_token, heartbeat_at, expires_at, metadata_json)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        owner_token = excluded.owner_token,
+        heartbeat_at = excluded.heartbeat_at,
+        expires_at = excluded.expires_at,
+        metadata_json = excluded.metadata_json
+      WHERE daemon_locks.expires_at < ? OR daemon_locks.owner_token = ?
+    `);
+
+    const result = stmt.run(lockId, ownerToken, nowMs, expiresAt, metadataJson, nowMs, ownerToken);
+
+    if (result.changes > 0) {
+      return {
+        ok: true,
+        lock_id: lockId,
+        owner_token: ownerToken,
+        expires_at: expiresAt,
+      };
+    }
+
+    const current = this.inspectDaemonLease(lockId);
+    return {
+      ok: false,
+      lock_id: lockId,
+      owner_token: ownerToken,
+      expires_at: current ? current.expires_at : 0,
+      message: current
+        ? `Lease '${lockId}' is held by '${current.owner_token}' until ${new Date(current.expires_at).toISOString()}.`
+        : `Failed to acquire lease '${lockId}'.`,
+    };
+  }
+
+  public renewDaemonLease(input: RenewDaemonLeaseInput): RenewDaemonLeaseResult {
+    const lockId = (input.lock_id ?? 'global').trim();
+    const ownerToken = input.owner_token?.trim();
+    if (!ownerToken) {
+      throw new Error('owner_token is required to renew a daemon lease.');
+    }
+    const ttlSec = input.ttl_sec && input.ttl_sec > 0 ? input.ttl_sec : 30;
+    const nowMs = Date.now();
+    const expiresAt = nowMs + ttlSec * 1000;
+
+    const stmt = this.db.prepare(`
+      UPDATE daemon_locks
+      SET heartbeat_at = ?, expires_at = ?
+      WHERE id = ? AND owner_token = ?
+    `);
+
+    const result = stmt.run(nowMs, expiresAt, lockId, ownerToken);
+
+    if (result.changes > 0) {
+      return {
+        ok: true,
+        lock_id: lockId,
+        expires_at: expiresAt,
+      };
+    }
+
+    return {
+      ok: false,
+      lock_id: lockId,
+      expires_at: 0,
+      message: `Failed to renew lease '${lockId}': not owned by token '${ownerToken}' or expired/deleted.`,
+    };
+  }
+
+  public releaseDaemonLease(input: ReleaseDaemonLeaseInput): ReleaseDaemonLeaseResult {
+    const lockId = (input.lock_id ?? 'global').trim();
+    const ownerToken = input.owner_token?.trim();
+    if (!ownerToken) {
+      throw new Error('owner_token is required to release a daemon lease.');
+    }
+
+    const stmt = this.db.prepare(`
+      DELETE FROM daemon_locks
+      WHERE id = ? AND owner_token = ?
+    `);
+
+    const result = stmt.run(lockId, ownerToken);
+    return {
+      ok: result.changes > 0,
+      lock_id: lockId,
+      message: result.changes > 0 ? undefined : `Lease '${lockId}' was not held by '${ownerToken}'.`,
+    };
+  }
+
+  public inspectDaemonLease(lockId: string = 'global'): DaemonLockRow | null {
+    const row = this.db
+      .prepare('SELECT id, owner_token, heartbeat_at, expires_at, metadata_json FROM daemon_locks WHERE id = ?')
+      .get(lockId) as unknown as DaemonLockRow | undefined;
+    return row ?? null;
   }
 
   public close(): void {

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ZodError } from 'zod';
 import { expandTilde, FerryCatEngine } from './engine.js';
+import { FerryCatDaemon } from './daemon.js';
 import {
   executeTaskAndFulfill,
   terminateActiveChildrenSync,
@@ -50,6 +51,7 @@ Commands:
   fail        Explicitly mark a CLAIMED contract you hold as terminal FAILED with reason
   inspect     Query contracts (renders concise table by default; pass --json for raw JSON)
   worker      Run background watcher, single-shot claim, or automated script execution
+  daemon      Run multi-tenant production daemon with CAS micro-lease and declarative handlers (ADR-0005)
 
 Common Options:
   --agent <id>              Agent identity (overrides AGENT_NAME env var)
@@ -200,6 +202,23 @@ Examples:
   ferrycat-cli worker --agent workbuddy --mode=watch
   ferrycat-cli worker --agent workbuddy --mode=claim
   ferrycat-cli worker --agent workbuddy --mode=exec --once --exec-file ./worker-handler.js`,
+
+  daemon: `Usage: ferrycat-cli daemon [--config <path>] [--agent <id>] [--once] [--lease-ttl <sec>] [--interval <ms>]
+
+Runs the FerryCat production daemon (ADR-0005). Coordinates background workers using short-transaction
+CAS leases on the daemon_locks table and executes declarative scripts defined in ferrycat.config.json.
+
+Options:
+  --config <path>           Path to ferrycat.config.json (defaults to ./ferrycat.config.json or ~/.ferrycat/config.json)
+  --agent <id>              Optional target agent filter (overrides config defaults)
+  --once                    Run a single dispatch cycle and exit
+  --lease-ttl <sec>         Daemon CAS lease TTL in seconds (default: 30)
+  --interval <ms>           Poll interval in milliseconds (default: 1000)
+  --no-notify               Disable console notices
+
+Examples:
+  ferrycat-cli daemon --config ./ferrycat.config.json
+  ferrycat-cli daemon --agent workbuddy --once`,
 };
 
 function stripBom(content: string): string {
@@ -433,6 +452,16 @@ function parseArgs(argv: string[]): ParsedCliArgs {
       const existing = (flagOverrides.pass_env as string[] | undefined) ?? [];
       existing.push(varName);
       flagOverrides.pass_env = existing;
+    } else if (token === '--config' || token === '-c') {
+      flagOverrides.config = requireFlagValue(token, rest[++i]);
+    } else if (token === '--lease-ttl') {
+      const ttl = Number(requireFlagValue('--lease-ttl', rest[++i]));
+      if (!Number.isInteger(ttl) || ttl <= 0) {
+        throw new Error('Invalid --lease-ttl: must be a positive integer.');
+      }
+      flagOverrides.lease_ttl_sec = ttl;
+    } else if (token === '--no-notify') {
+      flagOverrides.notify = false;
     } else if (token === '--format') {
       const fmt = requireFlagValue('--format', rest[++i]).trim().toLowerCase();
       if (fmt !== 'table' && fmt !== 'json') {
@@ -992,9 +1021,38 @@ async function main(): Promise<void> {
         }
         break;
       }
+      case 'daemon': {
+        const configPath = data.config as string | undefined;
+        const targetAgent = data.target_agent as string | undefined ?? data.agent_id as string | undefined;
+        const once = Boolean(data.once);
+        const leaseTtl = data.lease_ttl_sec ? Number(data.lease_ttl_sec) : undefined;
+        const intervalMs = data.interval_ms ? Number(data.interval_ms) : undefined;
+        const notify = data.notify !== false;
+
+        const daemon = new FerryCatDaemon({
+          configPath,
+          targetAgent,
+          leaseTtlSec: leaseTtl,
+          pollIntervalMs: intervalMs,
+          notify,
+        });
+
+        if (once) {
+          const res = await daemon.pollAndDispatchOnce();
+          daemon.releaseLease();
+          daemon.engine.close();
+          output = { ok: true, daemon_once: res };
+          console.log(JSON.stringify(output, null, 2));
+        } else {
+          await daemon.start();
+          // Keep active process alive until signal
+          await new Promise(() => {});
+        }
+        break;
+      }
       default:
         throw new Error(
-          `Unknown subcommand "${command}". Supported commands: dispatch, poll, verify, fulfill, release, extend, fail, inspect, worker. Run "ferrycat-cli --help" for usage.`
+          `Unknown subcommand "${command}". Supported commands: dispatch, poll, verify, fulfill, release, extend, fail, inspect, worker, daemon. Run "ferrycat-cli --help" for usage.`
         );
     }
   } catch (err) {

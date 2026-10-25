@@ -372,3 +372,51 @@ export const WorkerCommandShape = {
 };
 
 export const WorkerCommandSchema = z.object(WorkerCommandShape).strict();
+
+export const HandlerDefinitionSchema = z
+  .object({
+    exec_file: z
+      .string()
+      .min(1)
+      .max(1024)
+      .describe('Absolute or workspace-relative path to handler script file (disallows arbitrary shell execution)'),
+    exec_ttl_sec: z.number().int().min(5).max(7200).optional(),
+    pass_env: z.array(z.string().min(1).max(128)).optional(),
+    args: z.array(z.string()).optional(),
+  })
+  .strict();
+
+export const AgentConfigSchema = z
+  .object({
+    handlers: z.record(
+      z.enum(['code_review', 'architecture_audit', 'implementation', 'test_generation']),
+      HandlerDefinitionSchema
+    ),
+    default_handler: HandlerDefinitionSchema.optional(),
+  })
+  .strict();
+
+export const DaemonConfigSchema = z
+  .object({
+    lock_id: z.string().min(1).max(64).default('global'),
+    lease_ttl_sec: z.number().int().min(5).max(300).default(30),
+    heartbeat_interval_ms: z.number().int().min(1000).max(30000).default(5000),
+    poll_interval_ms: z.number().int().min(200).max(30000).default(1000),
+    owner_token: z.string().min(1).max(128).optional(),
+    notify: z.boolean().default(true),
+  })
+  .strict();
+
+export const FerryCatConfigFileSchema = z
+  .object({
+    version: z.literal(1).default(1),
+    daemon: DaemonConfigSchema.default({}),
+    agents: z.record(z.string().min(1).max(64), AgentConfigSchema).default({}),
+  })
+  .strict();
+
+export type FerryCatConfigFile = z.infer<typeof FerryCatConfigFileSchema>;
+export type DaemonConfig = z.infer<typeof DaemonConfigSchema>;
+export type AgentConfig = z.infer<typeof AgentConfigSchema>;
+export type HandlerDefinition = z.infer<typeof HandlerDefinitionSchema>;
+

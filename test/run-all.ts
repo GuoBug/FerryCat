@@ -18,6 +18,10 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function createTempWorkspace(prefix: string): { dir: string; dbPath: string; cleanup: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `ferrycat-test-${prefix}-`));
   const dbPath = path.join(dir, 'mesh.db');
@@ -2074,6 +2078,147 @@ async function test13_Step0SupervisorHardening(): Promise<void> {
   }
 }
 
+async function test14_Step1ControlledDaemonAndCasLeases(): Promise<void> {
+  console.log('\n[Test 14] Phase 3 Step 1: Controlled Daemon, CAS Leases & Declarative Config (ADR-0005)');
+  const { dir: testDir, dbPath, cleanup } = createTempWorkspace('step1_daemon');
+
+  try {
+    const engine = new FerryCatEngine({ dbPath });
+
+    // 14A: CAS Mutual Exclusion on daemon_locks
+    const lease1 = engine.acquireDaemonLease({
+      lock_id: 'test-lock',
+      owner_token: 'instance-alpha',
+      ttl_sec: 1, // 1 second short lease for test
+      metadata: { role: 'primary' },
+    });
+    assert.strictEqual(lease1.ok, true);
+    assert.strictEqual(lease1.owner_token, 'instance-alpha');
+
+    // Instance Beta attempts to preempt while Alpha's lease is valid -> must fail cleanly
+    const lease2 = engine.acquireDaemonLease({
+      lock_id: 'test-lock',
+      owner_token: 'instance-beta',
+      ttl_sec: 1,
+    });
+    assert.strictEqual(lease2.ok, false);
+    assert.ok(lease2.message?.includes('instance-alpha'));
+    console.log('  PASS [14A - CAS Lease Mutual Exclusion]: Instance Alpha acquired lease; Instance Beta was deterministically rejected.');
+
+    // 14B: Heartbeat renewal
+    const renew1 = engine.renewDaemonLease({
+      lock_id: 'test-lock',
+      owner_token: 'instance-alpha',
+      ttl_sec: 2,
+    });
+    assert.strictEqual(renew1.ok, true);
+
+    // Imposter renewal fails
+    const renewImposter = engine.renewDaemonLease({
+      lock_id: 'test-lock',
+      owner_token: 'instance-beta',
+      ttl_sec: 2,
+    });
+    assert.strictEqual(renewImposter.ok, false);
+    console.log('  PASS [14B - CAS Lease Renewal]: Valid owner renewed lease; invalid owner rejected.');
+
+    // 14C: Failover on Expiry (wait for TTL to lapse)
+    await sleep(2100);
+    const leaseBetaAfterExpiry = engine.acquireDaemonLease({
+      lock_id: 'test-lock',
+      owner_token: 'instance-beta',
+      ttl_sec: 5,
+    });
+    assert.strictEqual(leaseBetaAfterExpiry.ok, true);
+    assert.strictEqual(leaseBetaAfterExpiry.owner_token, 'instance-beta');
+    console.log('  PASS [14C - Expiry Failover]: Expired lease automatically yielded to Instance Beta via atomic CAS UPSERT.');
+
+    // 14D: Explicit release
+    const relRes = engine.releaseDaemonLease({
+      lock_id: 'test-lock',
+      owner_token: 'instance-beta',
+    });
+    assert.strictEqual(relRes.ok, true);
+    const inspectAfterRel = engine.inspectDaemonLease('test-lock');
+    assert.strictEqual(inspectAfterRel, null);
+    console.log('  PASS [14D - Lease Release]: Voluntary release cleared lock record.');
+
+    // 14E: Config File Loading & Declarative Dispatch
+    const dummyScript = path.join(testDir, 'handler.cjs');
+    fs.writeFileSync(
+      dummyScript,
+      `const fs = require('fs');
+       const input = fs.readFileSync(0, 'utf8');
+       const contract = JSON.parse(input);
+       console.log(JSON.stringify({
+         result_summary: "Automated handler completed for " + contract.contract_id,
+         structured_output: { executed: true, target: contract.target_agent }
+       }));
+      `
+    );
+
+    const configPath = path.join(testDir, 'ferrycat.config.json');
+    const configContent = {
+      version: 1,
+      daemon: {
+        lock_id: 'test-daemon',
+        lease_ttl_sec: 10,
+        heartbeat_interval_ms: 2000,
+        poll_interval_ms: 500,
+        notify: false,
+      },
+      agents: {
+        'daemon-worker': {
+          handlers: {
+            implementation: {
+              exec_file: dummyScript,
+            },
+          },
+        },
+      },
+    };
+    fs.writeFileSync(configPath, JSON.stringify(configContent, null, 2));
+
+    const p1 = path.join(testDir, 'target.ts');
+    fs.writeFileSync(p1, 'export const x = 1;', 'utf8');
+    const dispatchRes = engine.dispatchContract({
+      requester_agent: 'daemon-requester',
+      target_agent: 'daemon-worker',
+      task_type: 'implementation',
+      title: 'Config-driven daemon test',
+      context_summary: 'Run declarative handler via ferrycat daemon',
+      workspace_root: testDir,
+      pointers: [{ path: 'target.ts' }],
+    });
+
+    const { FerryCatDaemon } = await import('../src/daemon.js');
+    const daemon = new FerryCatDaemon({
+      configPath,
+      dbPath,
+      notify: false,
+    });
+
+    const cycleRes = await daemon.pollAndDispatchOnce();
+    assert.strictEqual(cycleRes.processed, true);
+    assert.strictEqual(cycleRes.contract_id, dispatchRes.contract_id);
+    assert.strictEqual(cycleRes.status, 'COMPLETED');
+
+    const inspectedContract = engine.inspectMeshState({ contract_id: dispatchRes.contract_id });
+    assert.strictEqual(inspectedContract.contracts[0].status, 'COMPLETED');
+    assert.strictEqual(
+      (inspectedContract.contracts[0].structured_output as Record<string, unknown>).executed,
+      true
+    );
+    console.log('  PASS [14E - Config-driven Handler Dispatch]: FerryCatDaemon executed declared handler and COMPLETED contract.');
+
+    daemon.releaseLease();
+    daemon.engine.close();
+    engine.close();
+  } finally {
+    cleanup();
+  }
+}
+
 async function main(): Promise<void> {
   console.log('==============================================================');
   console.log(' FerryCat Offline Verification Suite (Node ' + process.version + ')');
@@ -2092,9 +2237,10 @@ async function main(): Promise<void> {
   await test11_PhaseBCliErgonomicsAndToctouBuffer();
   await test12_Phase031_LeaseTokensAndPayloadLimits();
   await test13_Step0SupervisorHardening();
+  await test14_Step1ControlledDaemonAndCasLeases();
 
   console.log('\n==============================================================');
-  console.log(' ALL 13 TEST SUITES PASSED GREEN');
+  console.log(' ALL 14 TEST SUITES PASSED GREEN');
   console.log('==============================================================');
 }
 

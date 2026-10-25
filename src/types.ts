@@ -232,3 +232,51 @@ export interface InspectMeshStateInput {
   status?: ContractStatus | 'ACTIVE' | 'ALL';
   limit?: number;
 }
+
+export interface DaemonLockRow {
+  id: string;
+  owner_token: string;
+  heartbeat_at: number;
+  expires_at: number;
+  metadata_json: string | null;
+}
+
+export interface AcquireDaemonLeaseInput {
+  lock_id?: string;
+  owner_token: string;
+  ttl_sec?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AcquireDaemonLeaseResult {
+  ok: boolean;
+  lock_id: string;
+  owner_token: string;
+  expires_at: number;
+  message?: string;
+}
+
+export interface RenewDaemonLeaseInput {
+  lock_id?: string;
+  owner_token: string;
+  ttl_sec?: number;
+}
+
+export interface RenewDaemonLeaseResult {
+  ok: boolean;
+  lock_id: string;
+  expires_at: number;
+  message?: string;
+}
+
+export interface ReleaseDaemonLeaseInput {
+  lock_id?: string;
+  owner_token: string;
+}
+
+export interface ReleaseDaemonLeaseResult {
+  ok: boolean;
+  lock_id: string;
+  message?: string;
+}
+
