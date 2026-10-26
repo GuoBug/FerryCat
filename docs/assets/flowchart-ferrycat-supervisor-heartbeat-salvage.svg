@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 520" width="960" height="520" style="background:#0b0f19; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <defs>
+    <filter id="card-shadow" x="-5%" y="-5%" width="110%" height="110%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.5"/>
+    </filter>
+    <linearGradient id="badGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#450a0a"/>
+      <stop offset="100%" stop-color="#1c1917"/>
+    </linearGradient>
+    <linearGradient id="goodGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#064e3b"/>
+      <stop offset="100%" stop-color="#092d25"/>
+    </linearGradient>
+    <linearGradient id="salvageGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#713f12"/>
+      <stop offset="100%" stop-color="#1c1917"/>
+    </linearGradient>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#10b981"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#ef4444"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#f59e0b"/>
+    </marker>
+  </defs>
+
+  <!-- Frame Canvas -->
+  <rect x="20" y="20" width="920" height="480" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2" filter="url(#card-shadow)"/>
+
+  <!-- Header -->
+  <text x="50" y="56" fill="#f8fafc" font-size="18" font-weight="700" letter-spacing="0.5">FERRYCAT SUPERVISOR: LAZY HEARTBEAT &amp; OUTPUT SALVAGE</text>
+  <text x="50" y="78" fill="#94a3b8" font-size="12">Eradicating At-Most-Once Execution Loss via Bounded Keep-Alive Leases and Crash Salvage (CK-01 ~ CK-07)</text>
+  <line x1="50" y1="92" x2="910" y2="92" stroke="#1e293b" stroke-width="2"/>
+
+  <!-- Top Half: Naive Timeout & Execution Loss -->
+  <g transform="translate(50, 110)">
+    <rect x="0" y="0" width="860" height="150" rx="8" fill="url(#badGrad)" stroke="#b91c1c" stroke-width="1.5"/>
+    <rect x="16" y="14" width="280" height="22" rx="4" fill="#7f1d1d"/>
+    <text x="24" y="29" fill="#fecaca" font-size="11" font-weight="700">ANTI-PATTERN: AT-MOST-ONCE LOSS</text>
+    <text x="310" y="30" fill="#fca5a5" font-size="12">Aggressive heartbeats exhaust quotas; hard SIGKILL vaporizes valuable partial outputs</text>
+
+    <!-- Node 1: Quota Burn -->
+    <rect x="20" y="48" width="180" height="75" rx="6" fill="#1c1917" stroke="#7f1d1d" stroke-width="1"/>
+    <text x="30" y="68" fill="#e2e8f0" font-size="11" font-weight="700">1. Blind Tick Renewal</text>
+    <text x="30" y="86" fill="#f87171" font-size="10">Fixed 10s tick burns max 5</text>
+    <text x="30" y="104" fill="#fca5a5" font-size="10">extensions in only 50s!</text>
+
+    <!-- Arrow 1 to 2 -->
+    <line x1="200" y1="85" x2="245" y2="85" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrow-red)"/>
+
+    <!-- Node 2: 299s Reasoning -->
+    <rect x="250" y="48" width="180" height="75" rx="6" fill="#1c1917" stroke="#dc2626" stroke-width="1"/>
+    <text x="260" y="68" fill="#fca5a5" font-size="11" font-weight="700">2. 299s Heavy LLM Run</text>
+    <text x="260" y="86" fill="#cbd5e1" font-size="10">Generated 95% of patch</text>
+    <text x="260" y="104" fill="#f87171" font-size="10">1s left before exit...</text>
+
+    <!-- Arrow 2 to 3 -->
+    <line x1="430" y1="85" x2="475" y2="85" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrow-red)"/>
+
+    <!-- Node 3: Hard SIGKILL -->
+    <rect x="480" y="48" width="170" height="75" rx="6" fill="#1c1917" stroke="#dc2626" stroke-width="1"/>
+    <text x="490" y="68" fill="#ef4444" font-size="11" font-weight="700">3. Hard Timeout Kill</text>
+    <text x="490" y="86" fill="#fca5a5" font-size="10">SIGKILL child process</text>
+    <text x="490" y="104" fill="#cbd5e1" font-size="10">stdout buffer discarded</text>
+
+    <!-- Arrow 3 to 4 -->
+    <line x1="650" y1="85" x2="685" y2="85" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrow-red)"/>
+
+    <!-- Node 4: Complete Evaporation -->
+    <rect x="690" y="48" width="150" height="75" rx="6" fill="#7f1d1d" stroke="#ef4444" stroke-width="1.5"/>
+    <text x="700" y="70" fill="#ffffff" font-size="11" font-weight="800">AT-MOST-ONCE P0</text>
+    <text x="700" y="88" fill="#fecaca" font-size="10">TIMED_OUT: 0 bytes</text>
+    <text x="700" y="104" fill="#fecaca" font-size="10">Tokens &amp; time wasted!</text>
+  </g>
+
+  <!-- Bottom Half: FerryCat Step 0 Supervisor Hardening -->
+  <g transform="translate(50, 280)">
+    <rect x="0" y="0" width="860" height="200" rx="8" fill="url(#goodGrad)" stroke="#10b981" stroke-width="2"/>
+    <rect x="16" y="14" width="310" height="22" rx="4" fill="#047857"/>
+    <text x="24" y="29" fill="#ffffff" font-size="11" font-weight="700">FERRYCAT STEP 0 SUPERVISOR HARDENING</text>
+    <text x="340" y="29" fill="#34d399" font-size="12">Lazy Heartbeat Renewal + Critical Output Salvage + State Purity</text>
+
+    <!-- Component 1: Lazy Heartbeat -->
+    <rect x="20" y="50" width="260" height="128" rx="6" fill="#0f172a" stroke="#059669" stroke-width="1.2"/>
+    <text x="32" y="72" fill="#34d399" font-size="11" font-weight="700">1. Lazy Heartbeat (CK-01)</text>
+    <text x="32" y="92" fill="#cbd5e1" font-size="10">headroom = windowEnds - lead</text>
+    <text x="32" y="108" fill="#cbd5e1" font-size="10">if (headroom &gt; tick + slack) return</text>
+    <text x="32" y="132" fill="#10b981" font-size="10" font-weight="700">✔ Spends quota only when needed</text>
+    <text x="32" y="150" fill="#a7f3d0" font-size="10">30s TTL stably covers 120s+ runs</text>
+
+    <!-- Component 2: Partial Output Salvage -->
+    <rect x="295" y="50" width="270" height="128" rx="6" fill="url(#salvageGrad)" stroke="#f59e0b" stroke-width="1.5"/>
+    <text x="307" y="72" fill="#fbbf24" font-size="11" font-weight="700">2. Output Salvage (CK-07)</text>
+    <text x="307" y="92" fill="#fde68a" font-size="10">Trigger: before window closes / crash</text>
+    <text x="307" y="108" fill="#cbd5e1" font-size="10">Extract tail 256KB stdout &amp; stderr</text>
+    <text x="307" y="132" fill="#fbbf24" font-size="10" font-weight="700">✔ recordSalvage() persisted in DB</text>
+    <text x="307" y="150" fill="#fef3c7" font-size="10">Stored in salvaged_result_json</text>
+
+    <!-- Component 3: Clean State Transition -->
+    <rect x="580" y="50" width="260" height="128" rx="6" fill="#0f172a" stroke="#10b981" stroke-width="1.2"/>
+    <text x="592" y="72" fill="#34d399" font-size="11" font-weight="700">3. Architectural Purity (CK-09)</text>
+    <text x="592" y="92" fill="#a7f3d0" font-size="10">Zero new temporary states invented</text>
+    <text x="592" y="112" fill="#cbd5e1" font-size="10">Maps strictly to canonical states:</text>
+    <text x="592" y="128" fill="#e2e8f0" font-size="10">CLAIMED ➔ COMPLETED / TIMED_OUT</text>
+    <text x="592" y="150" fill="#38bdf8" font-size="10">Requester fetches salvage anytime</text>
+  </g>
+</svg>
