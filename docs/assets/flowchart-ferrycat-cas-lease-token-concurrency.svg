@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 520" width="960" height="520" style="background:#0b0f19; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <defs>
+    <filter id="card-shadow" x="-5%" y="-5%" width="110%" height="110%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.5"/>
+    </filter>
+    <linearGradient id="badGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#450a0a"/>
+      <stop offset="100%" stop-color="#1c1917"/>
+    </linearGradient>
+    <linearGradient id="goodGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#064e3b"/>
+      <stop offset="100%" stop-color="#092d25"/>
+    </linearGradient>
+    <linearGradient id="tokenGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#083344"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#10b981"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#ef4444"/>
+    </marker>
+    <marker id="arrow-cyan" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#06b6d4"/>
+    </marker>
+  </defs>
+
+  <!-- Frame Canvas -->
+  <rect x="20" y="20" width="920" height="480" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2" filter="url(#card-shadow)"/>
+
+  <!-- Header -->
+  <text x="50" y="56" fill="#f8fafc" font-size="18" font-weight="700" letter-spacing="0.5">FERRYCAT CONCURRENCY &amp; LEASE GOVERNANCE (FC-301)</text>
+  <text x="50" y="78" fill="#94a3b8" font-size="12">Atomic CAS Preemption and UUID Lease Tokens Against Same-Agent Impersonation Cross-Talk</text>
+  <line x1="50" y1="92" x2="910" y2="92" stroke="#1e293b" stroke-width="2"/>
+
+  <!-- Top Half: The Flaw of Identity-Only Matching -->
+  <g transform="translate(50, 110)">
+    <rect x="0" y="0" width="860" height="150" rx="8" fill="url(#badGrad)" stroke="#b91c1c" stroke-width="1.5"/>
+    <rect x="16" y="14" width="280" height="22" rx="4" fill="#7f1d1d"/>
+    <text x="24" y="29" fill="#fecaca" font-size="11" font-weight="700">FATAL FLAW: IDENTITY-ONLY CHECK</text>
+    <text x="310" y="30" fill="#fca5a5" font-size="12">Concurrent processes sharing the same agent_id overwrite each other's work</text>
+
+    <!-- Node 1: Worker 1 Claims -->
+    <rect x="20" y="48" width="180" height="75" rx="6" fill="#1c1917" stroke="#7f1d1d" stroke-width="1"/>
+    <text x="30" y="68" fill="#e2e8f0" font-size="11" font-weight="700">Worker 1 (Instance A)</text>
+    <text x="30" y="86" fill="#94a3b8" font-size="10">agent_id: "worker-reviewer"</text>
+    <text x="30" y="104" fill="#38bdf8" font-size="10">Claims task, computing...</text>
+
+    <!-- Arrow 1 to Task -->
+    <line x1="200" y1="85" x2="245" y2="85" stroke="#ef4444" stroke-width="1.5"/>
+
+    <!-- Central Task Box -->
+    <rect x="250" y="48" width="170" height="75" rx="6" fill="#292524" stroke="#dc2626" stroke-width="1.5"/>
+    <text x="260" y="68" fill="#f87171" font-size="11" font-weight="700">Contract #402</text>
+    <text x="260" y="86" fill="#cbd5e1" font-size="10">status: 'CLAIMED'</text>
+    <text x="260" y="104" fill="#94a3b8" font-size="10">target: "worker-reviewer"</text>
+
+    <!-- Node 2: Worker 2 Intercepts -->
+    <rect x="470" y="48" width="180" height="75" rx="6" fill="#1c1917" stroke="#dc2626" stroke-width="1"/>
+    <text x="480" y="68" fill="#fca5a5" font-size="11" font-weight="700">Worker 2 (Instance B)</text>
+    <text x="480" y="86" fill="#f87171" font-size="10">Same agent_id! Empty payload</text>
+    <text x="480" y="104" fill="#ef4444" font-size="10">Calls fulfill_contract()</text>
+
+    <!-- Arrow 2 to Cross-talk -->
+    <line x1="470" y1="85" x2="425" y2="85" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrow-red)"/>
+
+    <!-- Result Catastrophe -->
+    <rect x="680" y="48" width="160" height="75" rx="6" fill="#7f1d1d" stroke="#ef4444" stroke-width="1.5"/>
+    <text x="690" y="70" fill="#ffffff" font-size="11" font-weight="800">SILENT CORRUPTION</text>
+    <text x="690" y="88" fill="#fecaca" font-size="10">Worker 1's work wiped</text>
+    <text x="690" y="104" fill="#fecaca" font-size="10">Impersonation succeed!</text>
+  </g>
+
+  <!-- Bottom Half: FC-301 Atomic CAS & UUID Lease Token Guard -->
+  <g transform="translate(50, 280)">
+    <rect x="0" y="0" width="860" height="200" rx="8" fill="url(#goodGrad)" stroke="#10b981" stroke-width="2"/>
+    <rect x="16" y="14" width="280" height="22" rx="4" fill="#047857"/>
+    <text x="24" y="29" fill="#ffffff" font-size="11" font-weight="700">FC-301: ATOMIC CAS &amp; UUID LEASE</text>
+    <text x="310" y="29" fill="#34d399" font-size="12">Single-Statement CAS Preemption + Cryptographic Token Guard</text>
+
+    <!-- Step 1: Atomic CAS -->
+    <rect x="20" y="50" width="250" height="128" rx="6" fill="#0f172a" stroke="#059669" stroke-width="1.2"/>
+    <text x="32" y="72" fill="#34d399" font-size="11" font-weight="700">1. Atomic CAS Preemption</text>
+    <text x="32" y="92" fill="#cbd5e1" font-size="10">UPDATE contracts</text>
+    <text x="32" y="106" fill="#cbd5e1" font-size="10">SET status='CLAIMED', token=?</text>
+    <text x="32" y="120" fill="#cbd5e1" font-size="10">WHERE id=? AND status='SUBMITTED'</text>
+    <text x="32" y="144" fill="#10b981" font-size="10" font-weight="700">✔ changes === 1 is sole winner</text>
+    <text x="32" y="158" fill="#94a3b8" font-size="10">Losers immediately evaluate next</text>
+
+    <!-- Arrow 1 to 2 -->
+    <line x1="270" y1="114" x2="295" y2="114" stroke="#10b981" stroke-width="1.5" marker-end="url(#arrow-green)"/>
+
+    <!-- Step 2: UUID Lease Token -->
+    <rect x="305" y="50" width="250" height="128" rx="6" fill="url(#tokenGrad)" stroke="#06b6d4" stroke-width="1.2"/>
+    <text x="317" y="72" fill="#38bdf8" font-size="11" font-weight="700">2. Kernel-Issued UUID Lease</text>
+    <text x="317" y="94" fill="#bae6fd" font-size="10">token = crypto.randomUUID()</text>
+    <text x="317" y="112" fill="#e2e8f0" font-size="10">"4a2f8b91-7c1e-42d8-..."</text>
+    <text x="317" y="136" fill="#38bdf8" font-size="10" font-weight="600">Exclusive credential bound</text>
+    <text x="317" y="152" fill="#94a3b8" font-size="10">to winner process memory</text>
+
+    <!-- Arrow 2 to 3 -->
+    <line x1="555" y1="114" x2="580" y2="114" stroke="#06b6d4" stroke-width="1.5" marker-end="url(#arrow-cyan)"/>
+
+    <!-- Step 3: Lifecycle Holder Guard -->
+    <rect x="590" y="50" width="250" height="128" rx="6" fill="#0f172a" stroke="#10b981" stroke-width="1.2"/>
+    <text x="602" y="72" fill="#34d399" font-size="11" font-weight="700">3. Universal Holder Guard</text>
+    <text x="602" y="94" fill="#a7f3d0" font-size="10">fulfill / release / extend / fail</text>
+    <text x="602" y="112" fill="#f87171" font-size="10">✖ Rogue instance: REJECTED</text>
+    <text x="602" y="130" fill="#34d399" font-size="10">✔ Matching token: ALLOWED</text>
+    <text x="602" y="154" fill="#fbbf24" font-size="10">release resets token to NULL</text>
+  </g>
+</svg>
