@@ -671,10 +671,10 @@ export class FerryCatEngine {
       );
     }
 
-    const noOpWarning =
-      isMutationTask && 'noOp' in toctouCheck && toctouCheck.noOp
-        ? ' (WARNING: no-op fulfillment — 0 pointer files modified and 0 new artifact files added on disk.)'
-        : '';
+    const isNoOp = Boolean(isMutationTask && 'noOp' in toctouCheck && toctouCheck.noOp);
+    const noOpWarning = isNoOp
+      ? ' (WARNING: no-op fulfillment — 0 pointer files modified and 0 new artifact files added on disk.)'
+      : '';
 
     return {
       ok: true,
@@ -682,6 +682,7 @@ export class FerryCatEngine {
       status: 'COMPLETED',
       retry_count: row.retry_count,
       max_retries: row.max_retries,
+      ...(isNoOp ? { no_op: true } : {}),
       message: `Contract "${row.id}" fulfilled by "${agentId}" and marked COMPLETED.${noOpWarning}`,
     };
   }
@@ -1130,7 +1131,21 @@ export class FerryCatEngine {
       };
     }
 
-    if (row.status === 'COMPLETED' && isMutationTask && row.verified_sha256_json) {
+    if (row.status === 'COMPLETED' && isMutationTask) {
+      if (!row.verified_sha256_json) {
+        return {
+          ok: true,
+          valid: false,
+          contract_id: row.id,
+          status: row.status,
+          fulfillable: false,
+          target_agent: row.target_agent,
+          toctou_strike: toctouStrike,
+          max_toctou_strikes: MAX_TOCTOU_STRIKES,
+          dirty_files: [],
+          message: `Completed mutation contract "${row.id}" (${row.task_type}) has no recorded verified_sha256 snapshot (legacy row); post-completion verification skipped.${holderNote}`,
+        };
+      }
       const committedShaMap = JSON.parse(row.verified_sha256_json) as Record<string, string>;
       const postCheck = verifyCommittedMutationSnapshot(row.workspace_root, committedShaMap);
       const deliveredCount = Object.keys(committedShaMap).length;

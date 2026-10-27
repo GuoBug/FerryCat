@@ -1863,10 +1863,45 @@ async function test13_Step0SupervisorHardening(): Promise<void> {
     );
     const lastRenew = renewEvents[renewEvents.length - 1];
     assert.ok(
-      Number(lastRenew.extend_count) < 5,
-      `Heartbeat renewal count (${lastRenew.extend_count}) must have headroom under the hard cap of 5`
+      !renewalEvents.some((e) => e.event === 'HEARTBEAT_EXHAUSTED'),
+      'Heartbeat renewal must not exhaust the extension budget'
     );
-    console.log(`  PASS [13B - CK-01/02 Heartbeat Keep-Alive]: Kept alive across ${renewEvents.length} renewals and COMPLETED.`);
+    assert.ok(
+      Number(lastRenew.extend_count) <= 5,
+      `Heartbeat renewal count (${lastRenew.extend_count}) must stay within the hard cap of 5`
+    );
+
+    // Deterministic lazy-renewal check: when exec_ttl_sec (10s) has ample headroom, a short 450ms run performs 0 renewals
+    const cLazy = engine.dispatchContract({
+      requester_agent: 'gui',
+      target_agent: 'supervisor-worker',
+      task_type: 'code_review',
+      title: 'Lazy Renewal Headroom Test',
+      context_summary: 'Verify lazy renewal skips extendTtl when ample headroom remains',
+      workspace_root: dir,
+      pointers: [{ path: 'code.ts' }],
+      exec_ttl_sec: 10,
+    });
+    const claimedLazy = engine.pollNextTask({ agent_id: 'supervisor-worker' });
+    const fastScript = path.join(dir, 'fast_worker.cjs');
+    fs.writeFileSync(
+      fastScript,
+      `setTimeout(() => { console.log(JSON.stringify({ result_summary: "Fast script done" })); process.exit(0); }, 450);`
+    );
+    const lazyEvents: Record<string, unknown>[] = [];
+    const lazyResult = await executeTaskAndFulfill(
+      engine,
+      claimedLazy.contract as unknown as ContractPayload,
+      { execFile: fastScript },
+      { heartbeatIntervalMs: 200, onEvent: (ev) => lazyEvents.push(ev) }
+    );
+    assert.strictEqual(lazyResult.ok, true);
+    assert.strictEqual(
+      lazyEvents.filter((e) => e.event === 'HEARTBEAT_RENEWED').length,
+      0,
+      'Lazy heartbeat must perform 0 renewals when remaining TTL headroom is ample'
+    );
+    console.log(`  PASS [13B - CK-01/02 Heartbeat Keep-Alive]: Kept alive across ${renewEvents.length} renewals and verified 0 renewals under ample headroom.`);
 
     // -------------------------------------------------------------------------
     // 13C: CK-04 & CK-05: Process tree termination (grandchild process cleanup)
@@ -2816,6 +2851,7 @@ async function test16_DesktopNotificationAndWebhook(): Promise<void> {
       });
       assert.strictEqual(noOpFulfill.ok, true);
       assert.strictEqual(noOpFulfill.status, 'COMPLETED');
+      assert.strictEqual(noOpFulfill.no_op, true, 'No-op mutation fulfillment must set structured no_op: true');
       assert.ok(noOpFulfill.message.includes('WARNING: no-op fulfillment'), 'No-op mutation fulfillment must include warning');
 
       // Deleting a pointer file or declaring a non-existent artifact during a mutation task must fail with FILE_MISSING

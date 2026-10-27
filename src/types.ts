@@ -153,6 +153,8 @@ export interface FulfillContractResult {
     detail: string;
   }>;
   validation_errors?: string[];
+  /** True when a mutation contract ('implementation' | 'test_generation') completed with 0 modified pointers and 0 added artifacts. */
+  no_op?: boolean;
   message: string;
 }
 
