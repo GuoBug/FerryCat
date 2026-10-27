@@ -349,6 +349,7 @@ npx ferrycat daemon --agent workbuddy --once
 > - [ADR-0003: GUI Sandbox vs CLI Process Hybrid Layering Architecture & Wake-Up Boundaries](docs/adr/0003-gui-cli-hybrid-architecture.md) (Desktop HITL approval vs in-house CLI dual-channel autonomy)
 > - [ADR-0004: Separation of Review and Mutation (SRM), TOCTOU Soft-Failure Buffering & Immutable Baseline Protocol](docs/adr/0004-review-mutation-separation-and-toctou-buffer.md) (How to prevent review abortion from concurrent or well-intended reviewer edits; live mesh case: contract `fc_1793098036393_aea8bb9b`)
 > - [ADR-0005: Controlled Daemon, Atomic CAS Micro-Leases & Safe Execution Boundaries](docs/adr/0005-controlled-daemon-and-process-supervision.md) (Microsecond atomic CAS leases on `daemon_locks` and declarative whitelist handler enforcement)
+> - [ADR-0006: Dual-Track TOCTOU Semantics & Post-Mutation SHA-256 Fulfillment](docs/adr/0006-dual-track-mutation-fulfillment.md) (Why `implementation` / `test_generation` tasks commit post-mutation SHA-256 into `verified_sha256` while preserving pre-mutation baselines in `pointers`; live mesh case: `fc_1793100801409_4eedf544`)
 > - [FerryCat Requirements Backlog & Roadmap](docs/roadmap.md)
 
 ---

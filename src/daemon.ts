@@ -342,7 +342,9 @@ export class FerryCatDaemon {
 
     const cleanup = (sig: string) => {
       if (this.notifyEnabled) {
-        notifyOperator('Shutdown', `Received ${sig}, terminating children and releasing lease...`);
+        notifyOperator('Shutdown', `Received ${sig}, terminating children and releasing lease...`, {
+          webhookUrl: this.webhookUrl,
+        });
       }
       this.stop();
       terminateActiveChildrenSync();
@@ -378,7 +380,9 @@ export class FerryCatDaemon {
     } catch (err) {
       this.isLeader = false;
       if (this.notifyEnabled) {
-        notifyOperator('Lease Error', `Acquire lease error: ${err instanceof Error ? err.message : String(err)}`);
+        notifyOperator('Lease Error', `Acquire lease error: ${err instanceof Error ? err.message : String(err)}`, {
+          webhookUrl: this.webhookUrl,
+        });
       }
       return false;
     }
@@ -412,7 +416,11 @@ export class FerryCatDaemon {
         }
         terminateActiveChildrenSync();
         if (this.notifyEnabled) {
-          notifyOperator('Lease Lost', `Failed to renew lease '${this.lockId}': ${res.message}. In-flight contract released and children terminated.`);
+          notifyOperator(
+            'Lease Lost',
+            `Failed to renew lease '${this.lockId}': ${res.message}. In-flight contract released and children terminated.`,
+            { webhookUrl: this.webhookUrl }
+          );
         }
         return false;
       }
@@ -435,7 +443,11 @@ export class FerryCatDaemon {
       }
       terminateActiveChildrenSync();
       if (this.notifyEnabled) {
-        notifyOperator('Lease Error', `Heartbeat exception: ${err instanceof Error ? err.message : String(err)}. Contract released and children terminated.`);
+        notifyOperator(
+          'Lease Error',
+          `Heartbeat exception: ${err instanceof Error ? err.message : String(err)}. Contract released and children terminated.`,
+          { webhookUrl: this.webhookUrl }
+        );
       }
       return false;
     }
@@ -624,7 +636,9 @@ export class FerryCatDaemon {
         }
       } catch (err) {
         if (this.notifyEnabled) {
-          notifyOperator('Heartbeat Ticker Error', err instanceof Error ? err.message : String(err));
+          notifyOperator('Heartbeat Ticker Error', err instanceof Error ? err.message : String(err), {
+            webhookUrl: this.webhookUrl,
+          });
         }
       }
     }, this.heartbeatIntervalMs);
@@ -636,7 +650,9 @@ export class FerryCatDaemon {
         await this.pollAndDispatchOnce();
       } catch (err) {
         if (this.notifyEnabled) {
-          notifyOperator('Daemon Loop Error', err instanceof Error ? err.message : String(err));
+          notifyOperator('Daemon Loop Error', err instanceof Error ? err.message : String(err), {
+            webhookUrl: this.webhookUrl,
+          });
         }
       }
       if (this.isRunning) {

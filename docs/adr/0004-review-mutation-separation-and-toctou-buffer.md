@@ -1,6 +1,6 @@
 # ADR-0004: Separation of Review and Mutation (SRM), TOCTOU Soft-Failure Buffering, and Read-Only Baseline Protocol
 
-- **Status**: Accepted
+- **Status**: Accepted (Amended for `implementation` / `test_generation` tasks by [ADR-0006](0006-dual-track-mutation-fulfillment.md))
 - **Date**: 2026-10-23
 - **Authors**: Guo Qiang (GuoBug), Antigravity Engine, WorkBuddy Multi-Model Team
 - **Context**: Real-world collision incident in contract `fc_1792755474459_099b018e` and architecture consensus in `fc_1792757763323_a5d5da12`

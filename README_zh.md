@@ -348,6 +348,7 @@ npx ferrycat daemon --agent workbuddy --once
 > - [ADR-0003: GUI 沙箱与 CLI 进程混合分层架构、唤醒边界与双通道 Worker 选型](docs/adr/0003-gui-cli-hybrid-architecture_zh.md)（桌面人在回路审批闸 vs 自研 CLI 双通道自治）
 > - [ADR-0004: 审议分离协议、TOCTOU 软失败缓冲与审查期不可变基线规范](docs/adr/0004-review-mutation-separation-and-toctou-buffer_zh.md)（如何彻底规避审查者“边审边修”或并发写入引发的工单报废；真实案例见 2026-10-27 真实总线工单 `fc_1793098036393_aea8bb9b` 漂移拦截）
 > - [ADR-0005: 受控守护进程、短事务 CAS 租约与安全执行边界](docs/adr/0005-controlled-daemon-and-process-supervision_zh.md)（微秒级原子 CAS 租约如何防死锁、声明式 handler 如何将任意 Shell 注入面彻底收敛）
+> - [ADR-0006: 读写双轨 TOCTOU 语义与变更型任务双哈希交单存证协议](docs/adr/0006-dual-track-mutation-fulfillment_zh.md)（为什么 `implementation` / `test_generation` 任务在 `pointers` 保留修改前基线并在 `verified_sha256` 落库修改后产物哈希；实战案例：`fc_1793100801409_4eedf544`）
 > - [FerryCat 演进路线图 (Roadmap)](docs/roadmap_zh.md)
 
 ---

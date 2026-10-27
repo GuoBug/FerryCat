@@ -1,6 +1,6 @@
 # ADR-0004: 审议分离协议、TOCTOU 软失败缓冲与审查期不可变基线规范
 
-- **状态**: Accepted
+- **状态**: Accepted（针对 `implementation` / `test_generation` 变更型任务的交单语义已由 [ADR-0006](0006-dual-track-mutation-fulfillment_zh.md) 修订扩展）
 - **日期**: 2026-10-23
 - **作者**: Guo Qiang (GuoBug), Antigravity Engine, WorkBuddy Multi-Model Team
 - **上下文**: Phase A 终审阶段 `fc_1792755474459_099b018e` 实战事故与 `fc_1792757763323_a5d5da12` 架构共识

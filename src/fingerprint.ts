@@ -225,10 +225,12 @@ export function verifyAndSnapshotMutationPointers(
   firstFailure?: FingerprintVerificationResult;
   dirtyFiles: PointerDriftItem[];
   verifiedShaMap: Record<string, string>;
+  noOp: boolean;
 } {
   const dirtyFiles: PointerDriftItem[] = [];
   const blockingFailures: PointerDriftItem[] = [];
   const verifiedShaMap: Record<string, string> = {};
+  let addedArtifactCount = 0;
 
   for (const fp of fingerprints) {
     let absPath: string;
@@ -294,10 +296,20 @@ export function verifyAndSnapshotMutationPointers(
         continue;
       }
 
-      if (fs.existsSync(absArtifact) && fs.statSync(absArtifact).isFile()) {
-        const buffer = fs.readFileSync(absArtifact);
-        verifiedShaMap[rawArtifact] = computeFullFileSha256(buffer);
+      if (!fs.existsSync(absArtifact) || !fs.statSync(absArtifact).isFile()) {
+        const item: PointerDriftItem = {
+          path: rawArtifact,
+          reason: 'FILE_MISSING',
+          detail: `Declared artifact file missing on worker disk: "${rawArtifact}"`,
+        };
+        dirtyFiles.push(item);
+        blockingFailures.push(item);
+        continue;
       }
+
+      const buffer = fs.readFileSync(absArtifact);
+      verifiedShaMap[rawArtifact] = computeFullFileSha256(buffer);
+      addedArtifactCount++;
     }
   }
 
@@ -311,6 +323,7 @@ export function verifyAndSnapshotMutationPointers(
       },
       dirtyFiles,
       verifiedShaMap: {},
+      noOp: false,
     };
   }
 
@@ -318,7 +331,69 @@ export function verifyAndSnapshotMutationPointers(
     valid: true,
     dirtyFiles,
     verifiedShaMap,
+    noOp: dirtyFiles.length === 0 && addedArtifactCount === 0,
   };
+}
+
+/**
+ * Verifies a COMPLETED mutation contract's on-disk files against its committed
+ * post-mutation `verified_sha256` snapshot (ADR-0006).
+ */
+export function verifyCommittedMutationSnapshot(
+  workspaceRoot: string,
+  verifiedShaMap: Record<string, string>
+): {
+  valid: boolean;
+  firstFailure?: FingerprintVerificationResult;
+  dirtyFiles: PointerDriftItem[];
+} {
+  const dirtyFiles: PointerDriftItem[] = [];
+  for (const [rawPath, committedSha] of Object.entries(verifiedShaMap)) {
+    let absPath: string;
+    try {
+      absPath = assertSafePointerPath(workspaceRoot, rawPath);
+    } catch (err) {
+      dirtyFiles.push({
+        path: rawPath,
+        reason: 'SECURITY_REJECTED',
+        detail: err instanceof Error ? err.message : String(err),
+      });
+      continue;
+    }
+
+    if (!fs.existsSync(absPath) || !fs.statSync(absPath).isFile()) {
+      dirtyFiles.push({
+        path: rawPath,
+        reason: 'FILE_MISSING',
+        detail: `Delivered file missing on disk: "${rawPath}"`,
+      });
+      continue;
+    }
+
+    const buffer = fs.readFileSync(absPath);
+    const currentSha256 = computeFullFileSha256(buffer);
+    if (currentSha256 !== committedSha) {
+      dirtyFiles.push({
+        path: rawPath,
+        reason: 'CONTENT_CHANGED',
+        detail: `Post-completion SHA-256 mismatch for "${rawPath}": expected committed ${committedSha.slice(0, 16)}..., got ${currentSha256.slice(0, 16)}...`,
+      });
+    }
+  }
+
+  if (dirtyFiles.length > 0) {
+    return {
+      valid: false,
+      firstFailure: {
+        valid: false,
+        reason: dirtyFiles[0].reason,
+        detail: dirtyFiles[0].detail,
+      },
+      dirtyFiles,
+    };
+  }
+
+  return { valid: true, dirtyFiles: [] };
 }
 
 export function verifySingleRun(

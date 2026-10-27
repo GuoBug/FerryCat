@@ -7,6 +7,7 @@ import {
   computeFingerprints,
   verifyAllPointers,
   verifyAndSnapshotMutationPointers,
+  verifyCommittedMutationSnapshot,
   verifyFingerprintsWithRetry,
 } from './fingerprint.js';
 import { validateContractOutput } from './schema-validator.js';
@@ -670,13 +671,18 @@ export class FerryCatEngine {
       );
     }
 
+    const noOpWarning =
+      isMutationTask && 'noOp' in toctouCheck && toctouCheck.noOp
+        ? ' (WARNING: no-op fulfillment — 0 pointer files modified and 0 new artifact files added on disk.)'
+        : '';
+
     return {
       ok: true,
       contract_id: row.id,
       status: 'COMPLETED',
       retry_count: row.retry_count,
       max_retries: row.max_retries,
-      message: `Contract "${row.id}" fulfilled by "${agentId}" and marked COMPLETED.`,
+      message: `Contract "${row.id}" fulfilled by "${agentId}" and marked COMPLETED.${noOpWarning}`,
     };
   }
 
@@ -1121,6 +1127,40 @@ export class FerryCatEngine {
         max_toctou_strikes: MAX_TOCTOU_STRIKES,
         dirty_files: mutationCheck.dirtyFiles,
         message: `Mutation contract "${row.id}" (${row.task_type}) failed pointer verification [${badPaths}]: ${mutationCheck.firstFailure?.detail ?? 'missing or rejected file'}. Restore missing/unsafe pointer files before calling fulfill_contract.${holderNote}`,
+      };
+    }
+
+    if (row.status === 'COMPLETED' && isMutationTask && row.verified_sha256_json) {
+      const committedShaMap = JSON.parse(row.verified_sha256_json) as Record<string, string>;
+      const postCheck = verifyCommittedMutationSnapshot(row.workspace_root, committedShaMap);
+      const deliveredCount = Object.keys(committedShaMap).length;
+      if (postCheck.valid) {
+        return {
+          ok: true,
+          valid: true,
+          contract_id: row.id,
+          status: row.status,
+          fulfillable: false,
+          target_agent: row.target_agent,
+          toctou_strike: toctouStrike,
+          max_toctou_strikes: MAX_TOCTOU_STRIKES,
+          dirty_files: [],
+          message: `All ${deliveredCount} delivered file(s) for completed mutation contract "${row.id}" (${row.task_type}) match the committed post-mutation verified_sha256 snapshot.${holderNote}`,
+        };
+      }
+
+      const driftedPaths = postCheck.dirtyFiles.map((d) => d.path).join(', ');
+      return {
+        ok: true,
+        valid: false,
+        contract_id: row.id,
+        status: row.status,
+        fulfillable: false,
+        target_agent: row.target_agent,
+        toctou_strike: toctouStrike,
+        max_toctou_strikes: MAX_TOCTOU_STRIKES,
+        dirty_files: postCheck.dirtyFiles,
+        message: `Post-completion drift detected in ${postCheck.dirtyFiles.length} delivered file(s) [${driftedPaths}] for completed mutation contract "${row.id}" against committed verified_sha256.${holderNote}`,
       };
     }
 
