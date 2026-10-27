@@ -47,16 +47,17 @@
 
 ---
 
-## Phase 2: 开发者体验与跨分支补丁支持 (v0.4.0 — 规划中)
+## Phase 2: 开发者体验与跨分支补丁支持 (v0.4.0 — 部分完成)
 
-- [ ] **FC-201（队头陈旧工单非阻塞跳过）**：当队列首条工单因文件变更被判定为 `POINTER_STALE` 时，支持在记录告警的同时继续扫描同批次后续有效工单，避免队头阻塞一轮轮询（v0.3.0 while 循环已打通主体逻辑，待收敛验收）。
+- [x] **FC-201（队头陈旧工单非阻塞跳过）**：当队列首条工单因文件变更被判定为 `POINTER_STALE` 时，支持在记录告警的同时继续扫描同批次后续有效工单，彻底解除队头阻塞（已在 2026-10-27 真实总线工单 `fc_1793098036393_aea8bb9b` 漂移跳过并成功认领后续工单实测验收）。
 - [ ] **FC-202（可选 Git Patch 自包含载荷模式）**：针对两端处于不同 Git 分支的场景，支持可选携带轻量 `git diff` 切片，解除对同一磁盘工作树状态的强依赖。
-- [ ] **FC-203（异步非阻塞瞬态重试）**：将 `verifyFingerprintsWithRetry` 中的 `Atomics.wait(150ms)` 升级为异步 `await setTimeout`，避免瞬态复核期间阻塞 MCP 主线程。
+- [ ] **FC-203（异步非阻塞瞬态重试）**：将 `verifyFingerprintsWithRetry` 中的 `Atomics.wait(150ms)` 升级为异步微任务调度，消灭同步阻塞技术债。
+- [x] **FC-204（零配置沙箱演练 `ferrycat demo`）**：支持单命令 `npx ferrycat demo` 在 OS 临时目录自动构建隔离沙箱并跑通 4 步全流程（派单 $\to$ 认领 $\to$ 执行与真实心跳续约 $\to$ TOCTOU 复核 COMPLETED），并支持 `--keep`、`--json` 与 `--no-color`（v0.4.0 交付）。
 
 ---
 
-## Phase 3: 主动唤醒与常驻守护编排引擎 (Active Wake-up & Daemon Orchestration — 需求池/长期规划)
+## Phase 3: 主动唤醒与常驻守护编排引擎 (Active Wake-up & Daemon Orchestration)
 
-- [ ] **FC-401（后台常驻守护与服务管理 `ferrycat daemon`）**：支持脱离前台控制台的后台守护进程（跨平台 Service / Background Daemon 挂载），低开销监听 SQLite 队列，无需人工常驻保持终端窗口。
-- [ ] **FC-402（多 Agent CLI 路由矩阵与配置驱动主动唤醒）**：引入声明式配置文件（`ferrycat.config.json`），配置各 `target_agent` 与本地 CLI 工具/启动脚本的映射规则（如 `codex -> codex exec`、`claude -> claude -p`、`agy -> agy run`）；上游派发契约后，由调度守护进程自动识别并即时 Spawn 对应子进程主动唤醒下游 Agent。
+- [x] **FC-401（后台常驻守护与服务管理 `ferrycat daemon`）**：基于 SQLite WAL 短事务原子 CAS 租约（`daemon_locks`）与进程树严密监管（`taskkill /T /F` 与 `kill(-pgid)`）落地，无长锁无膨胀（ADR-0005，已在 v0.3.3 完成）。
+- [x] **FC-402（配置驱动声明式 Handler 与脚本执行）**：引入声明式配置文件（`ferrycat.config.json`），强绑定白名单执行文件，彻底消除任意自由 Shell 注入面（ADR-0005，已在 v0.3.3 完成）。
 - [ ] **FC-403（桌面系统通知与本地事件 Hook）**：支持操作系统级原生桌面通知（Windows Toast / macOS Notification）与本地 HTTP Webhook，在契约生成、认领被主动拉起、或终态完成/熔断时即时通知开发者或外部流水线。

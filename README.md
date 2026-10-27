@@ -24,6 +24,26 @@
 
 ---
 
+## Quick Glance (See It in 60s)
+
+No IDE setup or config file edits required. Watch the entire deterministic loop execute inside an isolated sandbox in ~2 seconds:
+
+```bash
+npx ferrycat demo
+```
+
+```text
+⚡ FerryCat Zero-Config Sandbox Demo ⚡
+  ✔ [1/4] Contract Dispatched   Locked: src/calc.ts (sha256: ce3ba9a5...bc5d)
+  ✔ [2/4] Contract Claimed      Lease:  7424261d-9a3f-4a86-a7ff-de278c273e96
+  ✔ [3/4] Execution & Check     Heartbeat 1 renewal | CHANGES_REQUESTED (loose equality caught)
+  ✔ [4/4] Contract Completed    TOCTOU: 0 dirty files | Status: COMPLETED (elapsed: 2.1s)
+  🎉 End-to-end multi-agent handoff verified successfully!
+```
+> 💡 Real benchmark: spins up child process, triggers 1 real lease renewal, catches loose equality at `src/calc.ts:6`. Options (`--keep` / `--json` / `--no-color`) detailed in [Quickstart §0](#0-see-what-it-actually-does-first-ferrycat-demo).
+
+---
+
 ## Core Pain Points & Engineering Solutions
 
 While the official MCP `Tasks` specification (2025-11 / 2026-07) addresses long-running operations within a **single `Client ↔ Server` connection**, it does not solve cross-host collaboration on a developer workstation:
@@ -291,6 +311,23 @@ Poll the queue, claim tasks, and execute local review/test scripts with automati
 npx ferrycat worker --agent codex --mode=exec --exec-file ./scripts/review.sh
 ```
 
+### 4. Zero-Config Sandbox Walkthrough (demo)
+Run the self-contained multi-agent lifecycle simulation without configuring an MCP server:
+```bash
+npx ferrycat demo
+```
+Options (`--keep` to retain SQLite for manual inspection, `--json` for CI assertions) detailed in [Quickstart §0](#0-see-what-it-actually-does-first-ferrycat-demo).
+
+### 5. Production Controlled Daemon (daemon, ADR-0005)
+Run the headless orchestration daemon coordinating background workers via atomic CAS leases and declarative script bindings:
+```bash
+# Launch daemon using project-local declarative configuration
+npx ferrycat daemon --config ./ferrycat.config.json
+
+# Run single poll/dispatch iteration for a targeted agent and exit
+npx ferrycat daemon --agent workbuddy --once
+```
+
 ---
 
 ## Exposed MCP Tools
@@ -310,7 +347,8 @@ npx ferrycat worker --agent codex --mode=exec --exec-file ./scripts/review.sh
 > - [ADR-0001: Cross-Host SQLite WAL Bus & Human-Scheduled Poll Model](docs/adr/0001-cross-host-sqlite-wal-and-poll-model.md) (Why `node:sqlite` WAL + `poll_next_task` instead of 60s Blocking Hold or single-connection MCP Tasks)
 > - [ADR-0002: Full-File SHA-256 Fingerprinting, TOCTOU Guard & Cross-Model Audit](docs/adr/0002-fingerprint-toctou-and-cross-model-audit.md) (Stale-context prevention and real-world cross-host verification records)
 > - [ADR-0003: GUI Sandbox vs CLI Process Hybrid Layering Architecture & Wake-Up Boundaries](docs/adr/0003-gui-cli-hybrid-architecture.md) (Desktop HITL approval vs in-house CLI dual-channel autonomy)
-> - [ADR-0004: Separation of Review and Mutation (SRM), TOCTOU Soft-Failure Buffering & Immutable Baseline Protocol](docs/adr/0004-review-mutation-separation-and-toctou-buffer.md) (How to prevent review abortion from concurrent or well-intended reviewer edits)
+> - [ADR-0004: Separation of Review and Mutation (SRM), TOCTOU Soft-Failure Buffering & Immutable Baseline Protocol](docs/adr/0004-review-mutation-separation-and-toctou-buffer.md) (How to prevent review abortion from concurrent or well-intended reviewer edits; live mesh case: contract `fc_1793098036393_aea8bb9b`)
+> - [ADR-0005: Controlled Daemon, Atomic CAS Micro-Leases & Safe Execution Boundaries](docs/adr/0005-controlled-daemon-and-process-supervision.md) (Microsecond atomic CAS leases on `daemon_locks` and declarative whitelist handler enforcement)
 > - [FerryCat Requirements Backlog & Roadmap](docs/roadmap.md)
 
 ---

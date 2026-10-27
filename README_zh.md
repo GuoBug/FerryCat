@@ -24,6 +24,26 @@
 
 ---
 
+## 60 秒看懂它 (Quick Glance)
+
+无需安装配置任何 IDE，无需修改配置文件，一条命令在系统临时目录跑通完整沙箱闭环：
+
+```bash
+npx ferrycat demo
+```
+
+```text
+⚡ FerryCat Zero-Config Sandbox Demo ⚡
+  ✔ [1/4] Contract Dispatched   Locked: src/calc.ts (sha256: ce3ba9a5...bc5d)
+  ✔ [2/4] Contract Claimed      Lease:  7424261d-9a3f-4a86-a7ff-de278c273e96
+  ✔ [3/4] Execution & Check     Heartbeat 1 renewal | CHANGES_REQUESTED (loose equality caught)
+  ✔ [4/4] Contract Completed    TOCTOU: 0 dirty files | Status: COMPLETED (elapsed: 2.1s)
+  🎉 End-to-end multi-agent handoff verified successfully!
+```
+> 💡 实测数据：2 秒真实拉起子进程、真实心跳续约 1 次、真实检出 `src/calc.ts:6` 的松散相等。详细参数（`--keep` / `--json` / `--no-color`）与底层机制见 [快速上手 §0](#0-先用一条命令看它到底是什么ferrycat-demo)。
+
+---
+
 ## 核心痛点与工程解法
 
 MCP 官方的 `Tasks` 规范（2025-11 / 2026-07）解决的是**单条 `Client ↔ Server` 连接内部**的长耗时任务状态跟踪，但无法解决桌面端跨宿主协同的四个物理难题：
@@ -290,6 +310,23 @@ npx ferrycat verify <CONTRACT_ID>
 npx ferrycat worker --agent codex --mode=exec --exec-file ./scripts/review.sh
 ```
 
+### 4. 零配置一键沙箱演练 (demo)
+在系统临时目录中构建沙箱，验证两端 Agent 派单、认领、心跳保活与交单的完整流转：
+```bash
+npx ferrycat demo
+```
+完整参数（`--keep` 保留 SQLite 供手动 inspect、`--json` 供 CI 断言等）见 [快速上手 §0](#0-先用一条命令看它到底是什么ferrycat-demo)。
+
+### 5. 受控常驻守护进程（daemon，ADR-0005）
+脱离前台控制台，基于 SQLite WAL 短事务原子 CAS 租约与声明式配置自动拉起白名单脚本，无人值守但严格受控：
+```bash
+# 依据当前目录 ferrycat.config.json 启动常驻守护中枢
+npx ferrycat daemon --config ./ferrycat.config.json
+
+# 指定监听单一 Agent 且仅处理一次工单后退出（适合轻量调度）
+npx ferrycat daemon --agent workbuddy --once
+```
+
 ---
 
 ## 暴露的 8 个 MCP 工具契约
@@ -309,7 +346,8 @@ npx ferrycat worker --agent codex --mode=exec --exec-file ./scripts/review.sh
 > - [ADR-0001: 采用跨宿主 SQLite WAL 总线与人工调度即时轮询模型](docs/adr/0001-cross-host-sqlite-wal-and-poll-model_zh.md)（为什么采用 `node:sqlite` WAL + `poll_next_task`，而非 60s 长轮询挂起或单连接 MCP Tasks）
 > - [ADR-0002: 全文件 SHA-256 指纹防盲审、TOCTOU 闭合与跨宿主多模型实测记录](docs/adr/0002-fingerprint-toctou-and-cross-model-audit_zh.md)（指针陈旧防护设计与 3 模型真实互审复盘记录）
 > - [ADR-0003: GUI 沙箱与 CLI 进程混合分层架构、唤醒边界与双通道 Worker 选型](docs/adr/0003-gui-cli-hybrid-architecture_zh.md)（桌面人在回路审批闸 vs 自研 CLI 双通道自治）
-> - [ADR-0004: 审议分离协议、TOCTOU 软失败缓冲与审查期不可变基线规范](docs/adr/0004-review-mutation-separation-and-toctou-buffer_zh.md)（如何彻底规避审查者“边审边修”或并发写入引发的工单报废）
+> - [ADR-0004: 审议分离协议、TOCTOU 软失败缓冲与审查期不可变基线规范](docs/adr/0004-review-mutation-separation-and-toctou-buffer_zh.md)（如何彻底规避审查者“边审边修”或并发写入引发的工单报废；真实案例见 2026-10-27 真实总线工单 `fc_1793098036393_aea8bb9b` 漂移拦截）
+> - [ADR-0005: 受控守护进程、短事务 CAS 租约与安全执行边界](docs/adr/0005-controlled-daemon-and-process-supervision_zh.md)（微秒级原子 CAS 租约如何防死锁、声明式 handler 如何将任意 Shell 注入面彻底收敛）
 > - [FerryCat 演进路线图 (Roadmap)](docs/roadmap_zh.md)
 
 ---

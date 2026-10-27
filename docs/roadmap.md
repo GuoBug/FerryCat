@@ -47,16 +47,17 @@
 
 ---
 
-## Phase 2: Developer Ergonomics & Multi-Workspace Support (v0.4.0 — Planned)
+## Phase 2: Developer Ergonomics & Multi-Workspace Support (v0.4.0 — Partially Complete)
 
-- [ ] **FC-201 (`POINTER_STALE` Queue Continuation)**: When the head-of-line contract fails fingerprint verification and transitions to `POINTER_STALE`, continue scanning the remaining candidate contracts in the same `poll_next_task` call while surfacing the stale warning in metadata (v0.3.0 while-loop continuous pagination implemented; final convergence verification pending).
+- [x] **FC-201 (`POINTER_STALE` Queue Continuation)**: When the head-of-line contract fails fingerprint verification and transitions to `POINTER_STALE`, continue scanning the remaining candidate contracts in the same `poll_next_task` call without head-of-line blocking (verified in production on 2026-10-27 live mesh contract `fc_1793098036393_aea8bb9b`).
 - [ ] **FC-202 (Self-Contained Git Patch Mode)**: Support optional inline `git diff` patch snapshots for cross-branch or disjoint workspace reviews where both hosts are not on the exact same working tree file state.
-- [ ] **FC-203 (Async Non-Blocking Transient Retry)**: Replace synchronous `Atomics.wait(150ms)` with async `setTimeout` promise delay in `pollNextTask` to avoid blocking the MCP stdio event loop during transient IDE save retries.
+- [ ] **FC-203 (Async Non-Blocking Transient Retry)**: Replace synchronous `Atomics.wait(150ms)` with async microtask scheduling in `pollNextTask` to retire technical debt.
+- [x] **FC-204 (Zero-Config Sandbox Walkthrough `ferrycat demo`)**: Single command `npx ferrycat demo` bootstrapping an isolated temporary sandbox verifying the full 4-stage lifecycle (dispatch $\to$ claim $\to$ execution with 1 heartbeat renewal $\to$ TOCTOU verification $\to$ COMPLETED) with `--keep`, `--json`, and `--no-color` support (delivered in v0.4.0).
 
 ---
 
-## Phase 3: Active Wake-up & Daemon Orchestration (Requirements Backlog / Future Exploration)
+## Phase 3: Active Wake-up & Daemon Orchestration
 
-- [ ] **FC-401 (Headless Background Daemon Management `ferrycat daemon`)**: Provide background daemon capabilities (cross-platform service / background daemon mounting) to monitor SQLite queues with low overhead without requiring an active foreground terminal window.
-- [ ] **FC-402 (Multi-Agent CLI Routing Matrix & Config-Driven Active Wake-up)**: Introduce declarative configuration (`ferrycat.config.json`) defining mapping rules between `target_agent` identities and local CLI executables/scripts (e.g. `codex -> codex exec`, `claude -> claude -p`, `antigravity -> agy run`). Upon dispatch, the daemon actively spawns and wakes up the targeted agent CLI with contract payloads.
+- [x] **FC-401 (Headless Background Daemon Management `ferrycat daemon`)**: Short-transaction atomic CAS leases on `daemon_locks` table and strict process tree termination (`taskkill /T /F` & `kill(-pgid)`), eliminating table locks and `-wal` file bloat (ADR-0005, delivered in v0.3.3).
+- [x] **FC-402 (Multi-Agent Declarative Config & Safe Execution Boundaries)**: Declarative configuration (`ferrycat.config.json`) strictly binding whitelist script handlers via `execFile`, eliminating arbitrary shell injection vectors (ADR-0005, delivered in v0.3.3).
 - [ ] **FC-403 (OS Desktop Notifications & Local Event Hooks)**: Support native OS desktop notifications (Windows Toast / macOS Notification / Linux libnotify) and local HTTP webhooks, alerting developers or external workflows immediately when contracts are created, claimed, completed, or failed.
