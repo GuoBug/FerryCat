@@ -19,7 +19,7 @@ function loadPackageVersion(): string {
   try {
     const pkgPath = fileURLToPath(new URL('../package.json', import.meta.url));
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: string };
-    return pkg.version ?? '0.3.3';
+    return pkg.version ?? '0.4.0';
   } catch {
     return '0.3.2';
   }
@@ -59,8 +59,10 @@ Exposed MCP Tools (8):
   fail_contract                   Mark CLAIMED contract as terminal FAILED with reason
   inspect_mesh_state              Read-only query of contracts by status, ID, or target_agent
 
-For CLI command usage (dispatch/poll/fulfill/verify/release/extend/fail/inspect/worker), run:
-  ferrycat-cli --help`);
+CLI Subcommands (same binary: \`npx ferrycat <command>\`):
+  demo                            Zero-config sandbox walkthrough of the full lifecycle (no MCP setup)
+  dispatch | poll | verify | fulfill | release | extend | fail | inspect | worker | daemon
+  Run \`ferrycat-cli --help\` (after a global install) for the full CLI reference.`);
   process.exit(0);
 }
 

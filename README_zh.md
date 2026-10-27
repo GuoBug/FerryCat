@@ -172,6 +172,41 @@ ferrycat-cli daemon --config ./ferrycat.config.json
 
 ## 快速上手 (Quickstart)
 
+### 0. 先用一条命令看它到底是什么（`ferrycat demo`）
+
+在配置任何 MCP 之前，先花 3 秒看一遍完整闭环：
+
+```bash
+npx ferrycat demo
+```
+*(亦可使用完整形式 `npx -p ferrycat ferrycat-cli demo`)*
+
+它会在系统临时目录里建一个完全隔离的沙箱（独立 SQLite + 示例源码 + 示例 handler），
+跑完 `派单 → 认领 → 受控执行 → TOCTOU 复核 → COMPLETED` 全流程，然后自动删除沙箱。
+**不会读写你的真实工作区，也不会碰 `~/.ferrycat/mesh.db`。**
+
+```text
+⚡ FerryCat Zero-Config Sandbox Demo ⚡
+Sandbox: C:\Users\...\Temp\ferrycat-demo-c5iK6V
+
+  ✔ [1/4] Contract Dispatched
+    Locked    src/calc.ts (sha256: ce3ba9a5...bc5d)
+  ✔ [2/4] Contract Claimed
+    Lease     7424261d-9a3f-4a86-a7ff-de278c273e96
+  ✔ [3/4] Execution & Schema Check
+    Heartbeat 1 lease renewal(s)
+  ✔ [4/4] Contract Completed
+    TOCTOU    fingerprints matched (0 dirty files)
+
+  🎉 End-to-end multi-agent handoff verified successfully!
+```
+
+| 选项 | 作用 |
+| :--- | :--- |
+| `--json` | 输出结构化结果，便于 CI 或上游脚本断言 |
+| `--keep` | 保留沙箱目录并打印路径，方便用 `sqlite3` 手动 inspect 生成的表 |
+| `--no-color` | 关闭 ANSI 颜色（非 TTY 或设置 `NO_COLOR` 时自动关闭） |
+
 ### 1. 推荐：零配置免安装挂载 (npx)
 
 无需手动克隆仓库或本地编译，直接在各 IDE 宿主的 MCP 配置文件中声明（基于全局或 `npx -y ferrycat`）：
@@ -230,29 +265,29 @@ ferrycat-cli daemon --config ./ferrycat.config.json
 
 ## 一级入口：CLI 极速总线与自动化调度 (`ferrycat-cli`)
 
-除了作为 MCP Server 嵌入在 IDE 内部供大模型自主调用外，FerryCat 原生提供一级命令行工具 **`ferrycat-cli`**（可通过全局安装或直接运行 `npx ferrycat-cli`）。它与 MCP 共享同一份 `~/.ferrycat/mesh.db` 数据库与 Zod 校验契约，无需切换 IDE 窗口即可在终端直观排查链路、接入 Git Hook 或自动化 CI：
+除了作为 MCP Server 嵌入在 IDE 内部供大模型自主调用外，FerryCat 原生提供一级命令行工具 **`ferrycat-cli`**。同一个 `ferrycat` 可执行文件会根据首个参数自动分流：无参数时启动 MCP Server，带子命令时走 CLI。因此免安装即可直接运行 `npx ferrycat <command>`（全局安装后也可用 `ferrycat-cli <command>`）。它与 MCP 共享同一份 `~/.ferrycat/mesh.db` 数据库与 Zod 校验契约，无需切换 IDE 窗口即可在终端直观排查链路、接入 Git Hook 或自动化 CI：
 
 ### 1. 终端可视化监控（ASCII 状态总线）
 实时打印工单流转状态、执行租约与报错信息，无需打开数据库查看：
 ```bash
 # 查看全局工单 ASCII 终端表格
-npx ferrycat-cli inspect
+npx ferrycat inspect
 
 # 按接收方过滤（例如仅查看 target 为 antigravity 的工单）
-npx ferrycat-cli inspect --target antigravity
+npx ferrycat inspect --target antigravity
 ```
 
 ### 2. 交付前只读预检（Pre-Flight Verify）
 在正式交付前，无需变更契约状态即可安全核验磁盘文件指针一致性，杜绝因未落盘修改导致的假阳性交付：
 ```bash
-npx ferrycat-cli verify <CONTRACT_ID>
+npx ferrycat verify <CONTRACT_ID>
 ```
 
 ### 3. 本地 CI 与自动化 Worker 执行
 监听契约队列并直接拉起本地脚本执行（支持安全脚本执行与非零退出自动熔断为 `FAILED`）：
 ```bash
 # 启动常驻 Worker 监听并自动执行指定脚本（无 Shell 注入风险）
-npx ferrycat-cli worker --agent codex --mode=exec --exec-file ./scripts/review.sh
+npx ferrycat worker --agent codex --mode=exec --exec-file ./scripts/review.sh
 ```
 
 ---

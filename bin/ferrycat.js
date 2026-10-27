@@ -10,7 +10,25 @@ if (major < 22 || (major === 22 && minor < 5)) {
   process.exit(1);
 }
 
-const targetPath = fileURLToPath(new URL('../dist/index.js', import.meta.url));
+const CLI_SUBCOMMANDS = new Set([
+  'demo',
+  'dispatch',
+  'poll',
+  'verify',
+  'fulfill',
+  'release',
+  'extend',
+  'fail',
+  'inspect',
+  'worker',
+  'daemon',
+]);
+
+const firstArg = process.argv[2];
+const isCli = Boolean(firstArg && CLI_SUBCOMMANDS.has(firstArg));
+const targetPath = fileURLToPath(
+  new URL(isCli ? '../dist/cli.js' : '../dist/index.js', import.meta.url)
+);
 const needsFlag = major === 22 && !process.execArgv.includes('--experimental-sqlite');
 
 if (needsFlag) {

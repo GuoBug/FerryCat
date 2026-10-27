@@ -172,6 +172,42 @@ Example `ferrycat.config.json`:
 
 ## Quickstart
 
+### 0. See what it actually does first (`ferrycat demo`)
+
+Before configuring any MCP server, watch the whole loop in ~3 seconds:
+
+```bash
+npx ferrycat demo
+```
+*(or `npx -p ferrycat ferrycat-cli demo`)*
+
+It spins up a fully isolated sandbox under the OS temp dir (dedicated SQLite database,
+sample source file, sample handler), runs `dispatch → claim → supervised execution →
+TOCTOU re-verification → COMPLETED`, then deletes the sandbox.
+**Your real workspace and `~/.ferrycat/mesh.db` are never read or written.**
+
+```text
+⚡ FerryCat Zero-Config Sandbox Demo ⚡
+Sandbox: /tmp/ferrycat-demo-c5iK6V
+
+  ✔ [1/4] Contract Dispatched
+    Locked    src/calc.ts (sha256: ce3ba9a5...bc5d)
+  ✔ [2/4] Contract Claimed
+    Lease     7424261d-9a3f-4a86-a7ff-de278c273e96
+  ✔ [3/4] Execution & Schema Check
+    Heartbeat 1 lease renewal(s)
+  ✔ [4/4] Contract Completed
+    TOCTOU    fingerprints matched (0 dirty files)
+
+  🎉 End-to-end multi-agent handoff verified successfully!
+```
+
+| Option | Effect |
+| :--- | :--- |
+| `--json` | Emit a structured result for CI / upstream assertions |
+| `--keep` | Keep the sandbox and print its path for manual `sqlite3` inspection |
+| `--no-color` | Disable ANSI colors (auto-off when not a TTY or `NO_COLOR` is set) |
+
 ### 1. Recommended: Zero-Install MCP Mounting (via npx)
 
 No local clone or manual compilation required. Mount directly into your IDE's MCP configuration using `npx -y ferrycat`:
@@ -230,29 +266,29 @@ Configure the target host's MCP settings with its respective `AGENT_NAME`:
 
 ## First-Class CLI Experience (`ferrycat-cli`)
 
-Beyond serving as an in-IDE MCP Server, FerryCat provides a first-class CLI utility (`ferrycat-cli` or `npx ferrycat-cli`). Sharing the same `~/.ferrycat/mesh.db` SQLite WAL database and Zod validation contracts, the CLI allows developers to inspect mesh health, verify working tree safety, and hook into automated CI/Git scripts without leaving their terminal:
+Beyond serving as an in-IDE MCP Server, FerryCat provides a first-class CLI utility (`ferrycat-cli`). The single `ferrycat` executable dispatches on its first argument: no argv starts the MCP stdio server, a known subcommand routes to the CLI. So you can run `npx ferrycat <command>` with zero install (or `ferrycat-cli <command>` once installed globally). Sharing the same `~/.ferrycat/mesh.db` SQLite WAL database and Zod validation contracts, the CLI allows developers to inspect mesh health, verify working tree safety, and hook into automated CI/Git scripts without leaving their terminal:
 
 ### 1. Terminal Visual Inspection (ASCII Status Table)
 Inspect all cross-host handoffs and error reasons formatted as an ASCII table:
 ```bash
 # View all contracts in an ASCII table
-npx ferrycat-cli inspect
+npx ferrycat inspect
 
 # Filter by target agent (e.g., only tasks for antigravity)
-npx ferrycat-cli inspect --target antigravity
+npx ferrycat inspect --target antigravity
 ```
 
 ### 2. Pre-Flight Verification (Auditing Before Mutation)
 Audit on-disk pointer file integrity against the contract's baseline SHA-256 before committing review work (ADR-0004), eliminating false-positive deliveries:
 ```bash
-npx ferrycat-cli verify <CONTRACT_ID>
+npx ferrycat verify <CONTRACT_ID>
 ```
 
 ### 3. Local CI & Headless Worker Execution
 Poll the queue, claim tasks, and execute local review/test scripts with automatic failure closure:
 ```bash
 # Safely run a script upon task arrival (no shell quotation hazards)
-npx ferrycat-cli worker --agent codex --mode=exec --exec-file ./scripts/review.sh
+npx ferrycat worker --agent codex --mode=exec --exec-file ./scripts/review.sh
 ```
 
 ---

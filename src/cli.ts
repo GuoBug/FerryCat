@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { ZodError } from 'zod';
 import { expandTilde, FerryCatEngine } from './engine.js';
 import { FerryCatDaemon } from './daemon.js';
+import { runDemo } from './demo.js';
 import {
   executeTaskAndFulfill,
   terminateActiveChildrenSync,
@@ -52,6 +53,7 @@ Commands:
   inspect     Query contracts (renders concise table by default; pass --json for raw JSON)
   worker      Run background watcher, single-shot claim, or automated script execution
   daemon      Run multi-tenant production daemon with CAS micro-lease and declarative handlers (ADR-0005)
+  demo        Zero-config sandbox walkthrough of the full contract lifecycle (no MCP setup needed)
 
 Common Options:
   --agent <id>              Agent identity (overrides AGENT_NAME env var)
@@ -219,6 +221,24 @@ Options:
 Examples:
   ferrycat-cli daemon --config ./ferrycat.config.json
   ferrycat-cli daemon --agent workbuddy --once`,
+
+  demo: `Usage: ferrycat-cli demo [--json] [--keep] [--no-color]
+
+Runs a complete contract lifecycle (dispatch -> claim -> supervised execution -> TOCTOU
+re-verification -> COMPLETED) inside an isolated temporary sandbox. Nothing outside the
+sandbox is read or written: no MCP configuration, no daemon, no existing mesh.db.
+
+This is the fastest way to see what FerryCat actually does before wiring it into an IDE.
+
+Options:
+  --json                    Emit the structured demo result instead of the terminal story
+  --keep                    Keep the sandbox directory and print its path for manual inspection
+  --no-color                Disable ANSI colors (auto-disabled when not a TTY or NO_COLOR is set)
+
+Examples:
+  ferrycat-cli demo
+  ferrycat-cli demo --json
+  ferrycat-cli demo --keep`,
 };
 
 function stripBom(content: string): string {
@@ -417,6 +437,10 @@ function parseArgs(argv: string[]): ParsedCliArgs {
       flagOverrides.limit = num;
     } else if (token === '--once') {
       flagOverrides.once = true;
+    } else if (token === '--keep') {
+      flagOverrides.keep = true;
+    } else if (token === '--no-color') {
+      flagOverrides.color = false;
     } else if (token === '--interval') {
       const rawInterval = requireFlagValue('--interval', rest[++i]);
       const num = Number(rawInterval);
@@ -1050,9 +1074,23 @@ async function main(): Promise<void> {
         }
         break;
       }
+      case 'demo': {
+        const demoResult = await runDemo({
+          json: parsed.format === 'json',
+          keep: Boolean(data.keep),
+          color: data.color as boolean | undefined,
+        });
+        if (parsed.format === 'json') {
+          console.log(JSON.stringify(demoResult, null, 2));
+        }
+        if (!demoResult.ok) {
+          process.exitCode = 1;
+        }
+        break;
+      }
       default:
         throw new Error(
-          `Unknown subcommand "${command}". Supported commands: dispatch, poll, verify, fulfill, release, extend, fail, inspect, worker, daemon. Run "ferrycat-cli --help" for usage.`
+          `Unknown subcommand "${command}". Supported commands: dispatch, poll, verify, fulfill, release, extend, fail, inspect, worker, daemon, demo. Run "ferrycat-cli --help" for usage.`
         );
     }
   } catch (err) {

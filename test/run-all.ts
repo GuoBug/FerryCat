@@ -18,6 +18,16 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * Version assertions must track package.json, never a literal: `npm run bump` only rewrites
+ * package.json + server.json, so a hardcoded version here turns every release into a red CI run.
+ */
+const PKG_VERSION = (
+  JSON.parse(fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf8')) as {
+    version: string;
+  }
+).version;
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1325,7 +1335,10 @@ async function test11_PhaseBCliErgonomicsAndToctouBuffer(): Promise<void> {
 
     const helpGlobal = await runCli(['--help']);
     assert.strictEqual(helpGlobal.code, 0);
-    assert.ok(helpGlobal.stdout.includes('FerryCat CLI v0.3.3'));
+    assert.ok(
+      helpGlobal.stdout.includes(`FerryCat CLI v${PKG_VERSION}`),
+      `global help must advertise the real package version (${PKG_VERSION}); hardcoding it breaks every bump`
+    );
 
     const helpFulfill = await runCli(['help', 'fulfill']);
     assert.strictEqual(helpFulfill.code, 0);
@@ -1333,7 +1346,11 @@ async function test11_PhaseBCliErgonomicsAndToctouBuffer(): Promise<void> {
 
     const verRes = await runCli(['--version']);
     assert.strictEqual(verRes.code, 0);
-    assert.strictEqual(verRes.stdout.trim(), '0.3.3');
+    assert.strictEqual(
+      verRes.stdout.trim(),
+      PKG_VERSION,
+      '--version must match package.json without a hardcoded literal'
+    );
 
     // Stdin dispatch with UTF-8 BOM (\uFEFF) via --file -
     const stdinDispatchPayload =
@@ -2272,6 +2289,207 @@ async function test14_Step1ControlledDaemonAndCasLeases(): Promise<void> {
   }
 }
 
+async function test15_DemoSandboxSimulation(): Promise<void> {
+  console.log('\n[Test 15] Zero-Config Sandbox Demo: Isolation, Self-Cleanup & Structured Contract (REQ-EXP-01)');
+  const { runDemo } = await import('../src/demo.js');
+
+  // 15A: --json mode drives the real lifecycle and stays silent on stdout
+  const captured: string[] = [];
+  const jsonRun = await runDemo({
+    json: true,
+    execDelayMs: 0,
+    write: (line) => captured.push(line),
+  });
+
+  assert.strictEqual(jsonRun.ok, true, 'demo must report ok=true');
+  assert.strictEqual(jsonRun.status, 'COMPLETED', 'demo must reach terminal COMPLETED');
+  assert.strictEqual(jsonRun.steps.length, 4, 'demo must expose exactly 4 lifecycle steps');
+  assert.deepStrictEqual(
+    jsonRun.steps.map((s) => s.index),
+    [1, 2, 3, 4],
+    'demo steps must be ordered 1..4'
+  );
+  assert.strictEqual(jsonRun.dirty_files, 0, 'TOCTOU re-verification must report 0 dirty files');
+  assert.strictEqual(jsonRun.verdict, 'CHANGES_REQUESTED', 'sample source must yield one advisory finding');
+  assert.strictEqual(jsonRun.issues.length, 1, 'handler must find exactly one loose-equality issue');
+  assert.match(jsonRun.issues[0], /calc\.ts:6/, 'finding must point at the loose-equality line');
+  assert.ok(jsonRun.contract_id.startsWith('fc_'), 'demo must produce a real contract id');
+  assert.match(jsonRun.claim_token, /^[0-9a-f-]{36}$/, 'demo must expose a real UUID lease token');
+  assert.strictEqual(captured.length, 0, 'json mode must not write any human-readable output');
+  console.log('  PASS [15A - Lifecycle & JSON Silence]: 4-step lifecycle completed; json mode emitted zero human lines.');
+
+  // 15B: default mode removes its sandbox
+  assert.strictEqual(jsonRun.sandbox_kept, false, 'sandbox_kept must default to false');
+  assert.strictEqual(
+    fs.existsSync(jsonRun.sandbox),
+    false,
+    'sandbox must be removed after a successful run (zero pollution)'
+  );
+  console.log('  PASS [15B - Sandbox Self-Cleanup]: temporary sandbox removed after run.');
+
+  // 15C: the demo never touches FERRYCAT_DB_PATH or the real mesh.db
+  const sentinelDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ferrycat-test-demo-sentinel-'));
+  const sentinelDb = path.join(sentinelDir, 'sentinel-mesh.db');
+  const prevDbEnv = process.env.FERRYCAT_DB_PATH;
+  process.env.FERRYCAT_DB_PATH = sentinelDb;
+  try {
+    const sentinelRun = await runDemo({ json: true, execDelayMs: 0 });
+    assert.strictEqual(sentinelRun.ok, true, 'demo must succeed under a hostile FERRYCAT_DB_PATH');
+    assert.strictEqual(
+      fs.existsSync(sentinelDb),
+      false,
+      'demo must not create or touch the database named by FERRYCAT_DB_PATH'
+    );
+  } finally {
+    if (prevDbEnv === undefined) {
+      delete process.env.FERRYCAT_DB_PATH;
+    } else {
+      process.env.FERRYCAT_DB_PATH = prevDbEnv;
+    }
+    fs.rmSync(sentinelDir, { recursive: true, force: true });
+  }
+  console.log('  PASS [15C - Zero Pollution]: FERRYCAT_DB_PATH sentinel untouched; sandbox is fully self-contained.');
+
+  // 15D: --keep preserves a complete, inspectable sandbox under os.tmpdir()
+  const keptRun = await runDemo({ json: true, keep: true, execDelayMs: 0 });
+  try {
+    assert.strictEqual(keptRun.sandbox_kept, true, 'sandbox_kept must reflect --keep');
+    assert.ok(fs.existsSync(keptRun.sandbox), 'kept sandbox must survive the run');
+    for (const rel of ['demo-mesh.db', 'demo-handler.cjs', path.join('src', 'calc.ts')]) {
+      assert.ok(
+        fs.existsSync(path.join(keptRun.sandbox, rel)),
+        `kept sandbox must contain "${rel}" for manual inspection`
+      );
+    }
+    assert.ok(
+      path.resolve(keptRun.sandbox).startsWith(path.resolve(os.tmpdir())),
+      'sandbox must live under the OS temp dir, never inside the repository'
+    );
+  } finally {
+    fs.rmSync(keptRun.sandbox, { recursive: true, force: true });
+  }
+  console.log('  PASS [15D - Keep Mode]: sandbox retained with db + handler + sample source for inspection.');
+
+  // 15E: human mode renders the four-step story without ANSI noise when color is off
+  const humanLines: string[] = [];
+  const humanRun = await runDemo({
+    json: false,
+    color: false,
+    execDelayMs: 0,
+    write: (line) => humanLines.push(line),
+  });
+  const human = humanLines.join('\n');
+  assert.strictEqual(humanRun.ok, true, 'human mode must succeed');
+  for (const title of [
+    'Contract Dispatched',
+    'Contract Claimed',
+    'Execution & Schema Check',
+    'Contract Completed',
+  ]) {
+    assert.ok(human.includes(title), `human output must mention "${title}"`);
+  }
+  assert.ok(
+    human.includes('End-to-end multi-agent handoff verified successfully'),
+    'human output must close with the success banner'
+  );
+  assert.ok(
+    !human.includes('\u001b['),
+    'color:false must emit no ANSI escape sequences (piped/CI-safe)'
+  );
+  console.log('  PASS [15E - Terminal Story]: 4 steps rendered, success banner present, ANSI-free when color is off.');
+
+  // 15F: CLI wiring — help lists the subcommand and `demo --json` is machine parseable end to end
+  const cliPath = path.resolve('dist/cli.js');
+  const execCli = (args: string[]): Promise<{ code: number; stdout: string; stderr: string }> =>
+    new Promise((resolve) => {
+      execFile(
+        process.execPath,
+        ['--experimental-sqlite', cliPath, ...args],
+        { env: { ...process.env, AGENT_NAME: '', FERRYCAT_DB_PATH: '' } },
+        (err, stdout, stderr) => resolve({ code: err ? ((err.code as number) ?? 1) : 0, stdout, stderr })
+      );
+    });
+
+  const helpRes = await execCli(['--help']);
+  assert.strictEqual(helpRes.code, 0, helpRes.stderr);
+  assert.ok(helpRes.stdout.includes('demo'), 'global help must list the demo subcommand');
+
+  const demoHelpRes = await execCli(['demo', '--help']);
+  assert.strictEqual(demoHelpRes.code, 0, demoHelpRes.stderr);
+  for (const flag of ['--json', '--keep', '--no-color']) {
+    assert.ok(demoHelpRes.stdout.includes(flag), `demo --help must document ${flag}`);
+  }
+
+  const cliDemoRes = await execCli(['demo', '--json']);
+  assert.strictEqual(cliDemoRes.code, 0, cliDemoRes.stderr);
+  const cliDemoJson = JSON.parse(cliDemoRes.stdout) as { ok: boolean; status: string; steps: unknown[] };
+  assert.strictEqual(cliDemoJson.ok, true, 'CLI demo must exit with ok=true');
+  assert.strictEqual(cliDemoJson.status, 'COMPLETED', 'CLI demo must reach COMPLETED');
+  assert.strictEqual(cliDemoJson.steps.length, 4, 'CLI demo must report 4 steps');
+
+  // Verify bin/ferrycat.js wrapper also cleanly routes `demo` subcommand
+  const binWrapperPath = path.resolve('bin/ferrycat.js');
+  const execBin = (args: string[]): Promise<{ code: number; stdout: string; stderr: string }> =>
+    new Promise((resolve) => {
+      execFile(
+        process.execPath,
+        [binWrapperPath, ...args],
+        { env: { ...process.env, AGENT_NAME: '', FERRYCAT_DB_PATH: '' } },
+        (err, stdout, stderr) => resolve({ code: err ? ((err.code as number) ?? 1) : 0, stdout, stderr })
+      );
+    });
+
+  const binDemoRes = await execBin(['demo', '--json']);
+  assert.strictEqual(binDemoRes.code, 0, binDemoRes.stderr);
+  const binDemoJson = JSON.parse(binDemoRes.stdout) as { ok: boolean; status: string };
+  assert.strictEqual(binDemoJson.ok, true, 'bin/ferrycat.js wrapper must execute demo subcommand cleanly');
+
+  // The wrapper's *other* direction is the risky one: MCP-server argv shapes must still land on
+  // dist/index.js. If the subcommand predicate ever inverts, every IDE integration dies while the
+  // demo keeps working — which is exactly the failure mode a demo-only assertion would hide.
+  const binMcpHelp = await execBin(['--help']);
+  assert.strictEqual(binMcpHelp.code, 0, binMcpHelp.stderr);
+  assert.ok(
+    binMcpHelp.stdout.includes('MCP Stdio Server'),
+    '--help must still route to the MCP server entry (not the CLI help tree)'
+  );
+  assert.ok(
+    binMcpHelp.stdout.includes('demo'),
+    'MCP help must advertise the demo subcommand so `npx ferrycat demo` is discoverable'
+  );
+
+  const binVersion = await execBin(['--version']);
+  assert.strictEqual(binVersion.code, 0, binVersion.stderr);
+  assert.strictEqual(
+    binVersion.stdout.trim(),
+    PKG_VERSION,
+    'wrapper --version must report the real package version'
+  );
+
+  // Zero argv => MCP server. With stdin closed it must terminate cleanly, never dump a stack trace.
+  const binNoArgs = await new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
+    const child = spawn(process.execPath, [binWrapperPath], {
+      env: { ...process.env, AGENT_NAME: '', FERRYCAT_DB_PATH: '' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => (stdout += d));
+    child.stderr.on('data', (d) => (stderr += d));
+    child.stdin.end(); // EOF: an MCP stdio server should shut down instead of hanging
+    child.on('close', (code) => resolve({ code: code ?? 0, stdout, stderr }));
+  });
+  assert.strictEqual(binNoArgs.code, 0, `bare \`ferrycat\` must exit cleanly: ${binNoArgs.stderr}`);
+  assert.ok(
+    !binNoArgs.stderr.includes('ERR_SQLITE') && !binNoArgs.stderr.includes('at async'),
+    'bare `ferrycat` must not surface an unhandled error when stdin closes'
+  );
+
+  console.log(
+    '  PASS [15F - CLI Wiring]: help tree documents demo; `demo --json` parses to a COMPLETED contract; wrapper still routes bare/--help/--version to the MCP server.'
+  );
+}
+
 async function main(): Promise<void> {
   console.log('==============================================================');
   console.log(' FerryCat Offline Verification Suite (Node ' + process.version + ')');
@@ -2291,9 +2509,10 @@ async function main(): Promise<void> {
   await test12_Phase031_LeaseTokensAndPayloadLimits();
   await test13_Step0SupervisorHardening();
   await test14_Step1ControlledDaemonAndCasLeases();
+  await test15_DemoSandboxSimulation();
 
   console.log('\n==============================================================');
-  console.log(' ALL 14 TEST SUITES PASSED GREEN');
+  console.log(' ALL 15 TEST SUITES PASSED GREEN');
   console.log('==============================================================');
 }
 
