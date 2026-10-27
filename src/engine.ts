@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   computeFingerprints,
   verifyAllPointers,
+  verifyAndSnapshotMutationPointers,
   verifyFingerprintsWithRetry,
 } from './fingerprint.js';
 import { validateContractOutput } from './schema-validator.js';
@@ -514,9 +515,16 @@ export class FerryCatEngine {
       };
     }
 
-    //Re-verify file fingerprints at fulfill time to close the claim->read->fulfill TOCTOU window (ADR-0004)
+    // Re-verify file fingerprints at fulfill time to close the claim->read->fulfill TOCTOU window (ADR-0004).
+    // For mutation tasks ('implementation' | 'test_generation'), the worker is expected to edit pointer files on
+    // disk; only SECURITY_REJECTED / FILE_MISSING block fulfillment, while post-mutation SHA-256 hashes are
+    // committed into verified_sha256_json (preserving the pre-mutation baseline in pointers_json).
     const fingerprints = JSON.parse(row.pointers_json) as FileFingerprint[];
-    const toctouCheck = verifyAllPointers(row.workspace_root, fingerprints);
+    const isMutationTask = row.task_type === 'implementation' || row.task_type === 'test_generation';
+    const toctouCheck = isMutationTask
+      ? verifyAndSnapshotMutationPointers(row.workspace_root, fingerprints, input.artifacts_pointers)
+      : verifyAllPointers(row.workspace_root, fingerprints);
+
     if (!toctouCheck.valid && toctouCheck.firstFailure) {
       const toctouReason = `TOCTOU_${toctouCheck.firstFailure.reason}: ${toctouCheck.firstFailure.detail}`;
       const nextStrike = (row.toctou_strike ?? 0) + 1;
@@ -578,7 +586,10 @@ export class FerryCatEngine {
       };
     }
 
-    const verifiedShaMap = Object.fromEntries(fingerprints.map((fp) => [fp.path, fp.sha256]));
+    const verifiedShaMap =
+      isMutationTask && 'verifiedShaMap' in toctouCheck
+        ? toctouCheck.verifiedShaMap
+        : Object.fromEntries(fingerprints.map((fp) => [fp.path, fp.sha256]));
     const verifiedSha256Json = JSON.stringify(verifiedShaMap);
 
     // Validate against contract_schema if defined
@@ -1068,13 +1079,52 @@ export class FerryCatEngine {
     }
 
     const fingerprints = JSON.parse(row.pointers_json) as FileFingerprint[];
-    const check = verifyAllPointers(row.workspace_root, fingerprints);
+    const isMutationTask = row.task_type === 'implementation' || row.task_type === 'test_generation';
     const toctouStrike = row.toctou_strike ?? 0;
     const callerAgent = input.agent_id?.trim();
     const holderNote =
       callerAgent && callerAgent !== row.target_agent
         ? ` (Note: contract is assigned to "${row.target_agent}", verified by "${callerAgent}".)`
         : '';
+
+    if (row.status === 'CLAIMED' && isMutationTask) {
+      const mutationCheck = verifyAndSnapshotMutationPointers(row.workspace_root, fingerprints);
+      if (mutationCheck.valid) {
+        const modifiedCount = mutationCheck.dirtyFiles.length;
+        const modifiedSummary =
+          modifiedCount > 0
+            ? `${modifiedCount} of ${fingerprints.length} pointer file(s) modified on disk [${mutationCheck.dirtyFiles.map((d) => d.path).join(', ')}]; post-mutation SHA-256 hashes will be committed into verified_sha256 upon fulfill_contract.`
+            : `All ${fingerprints.length} pointer file(s) currently match the pre-mutation baseline.`;
+        return {
+          ok: true,
+          valid: true,
+          contract_id: row.id,
+          status: row.status,
+          fulfillable: true,
+          target_agent: row.target_agent,
+          toctou_strike: toctouStrike,
+          max_toctou_strikes: MAX_TOCTOU_STRIKES,
+          dirty_files: mutationCheck.dirtyFiles,
+          message: `Mutation contract "${row.id}" (${row.task_type}) passed security & existence checks. ${modifiedSummary} Safe to fulfill.${holderNote}`,
+        };
+      }
+
+      const badPaths = mutationCheck.dirtyFiles.map((d) => d.path).join(', ');
+      return {
+        ok: true,
+        valid: false,
+        contract_id: row.id,
+        status: row.status,
+        fulfillable: false,
+        target_agent: row.target_agent,
+        toctou_strike: toctouStrike,
+        max_toctou_strikes: MAX_TOCTOU_STRIKES,
+        dirty_files: mutationCheck.dirtyFiles,
+        message: `Mutation contract "${row.id}" (${row.task_type}) failed pointer verification [${badPaths}]: ${mutationCheck.firstFailure?.detail ?? 'missing or rejected file'}. Restore missing/unsafe pointer files before calling fulfill_contract.${holderNote}`,
+      };
+    }
+
+    const check = verifyAllPointers(row.workspace_root, fingerprints);
 
     if (check.valid) {
       const fulfillable = row.status === 'CLAIMED';

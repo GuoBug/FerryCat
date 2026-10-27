@@ -56,8 +56,8 @@
 
 ---
 
-## Phase 3: Active Wake-up & Daemon Orchestration
+## Phase 3: Active Wake-up & Daemon Orchestration (Completed)
 
 - [x] **FC-401 (Headless Background Daemon Management `ferrycat daemon`)**: Short-transaction atomic CAS leases on `daemon_locks` table and strict process tree termination (`taskkill /T /F` & `kill(-pgid)`), eliminating table locks and `-wal` file bloat (ADR-0005, delivered in v0.3.3).
 - [x] **FC-402 (Multi-Agent Declarative Config & Safe Execution Boundaries)**: Declarative configuration (`ferrycat.config.json`) strictly binding whitelist script handlers via `execFile`, eliminating arbitrary shell injection vectors (ADR-0005, delivered in v0.3.3).
-- [ ] **FC-403 (OS Desktop Notifications & Local Event Hooks)**: Support native OS desktop notifications (Windows Toast / macOS Notification / Linux libnotify) and local HTTP webhooks, alerting developers or external workflows immediately when contracts are created, claimed, completed, or failed.
+- [x] **FC-403 (OS Desktop Notifications & Local Event Hooks)**: Support native OS desktop notifications (Windows WinRT Toast / macOS `osascript` via positional `argv` / Linux `notify-send`, non-blocking `unref` + `error` listener guard) and local HTTP webhooks (`webhook_url` / `FERRYCAT_WEBHOOK_URL`, 3s bounded timeout), alerting developers or external workflows immediately when contracts are claimed, completed, failed, or lose leases.

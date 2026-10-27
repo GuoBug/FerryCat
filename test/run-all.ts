@@ -2490,6 +2490,273 @@ async function test15_DemoSandboxSimulation(): Promise<void> {
   );
 }
 
+async function test16_DesktopNotificationAndWebhook(): Promise<void> {
+  console.log('\n[Test 16] FC-403: Native Desktop Notifications & Local Webhook Dispatch');
+  const http = await import('node:http');
+  const {
+    notifyOperator,
+    dispatchWebhook,
+    setNotifyWebhook,
+    getNotifyWebhook,
+    resolveNativeCommand,
+  } = await import('../src/daemon.js');
+
+  const received: Array<Record<string, unknown>> = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      try {
+        received.push(JSON.parse(body) as Record<string, unknown>);
+      } catch {
+        received.push({ __unparsable: body });
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object', 'mock webhook server must bind a port');
+  const port = address.port;
+  const hookUrl = `http://127.0.0.1:${port}/ferrycat-events`;
+
+  try {
+    // 16A: real HTTP delivery with the full five-field envelope
+    const delivered = await dispatchWebhook(hookUrl, {
+      event: 'TEST_EVENT',
+      title: 'Webhook Probe',
+      message: 'payload shape verification',
+      timestamp: new Date().toISOString(),
+      level: 'warn',
+    });
+    assert.strictEqual(delivered, true, 'webhook delivery must report success on HTTP 200');
+    assert.strictEqual(received.length, 1, 'mock server must receive exactly one POST');
+    const envelope = received[0];
+    for (const field of ['event', 'title', 'message', 'timestamp', 'level']) {
+      assert.ok(field in envelope, `webhook payload must contain "${field}"`);
+    }
+    assert.strictEqual(envelope.event, 'TEST_EVENT');
+    assert.strictEqual(envelope.title, 'Webhook Probe');
+    assert.strictEqual(envelope.level, 'warn');
+    assert.ok(
+      !Number.isNaN(Date.parse(String(envelope.timestamp))),
+      'webhook timestamp must be ISO-8601 parseable'
+    );
+    console.log('  PASS [16A - Webhook Delivery]: real HTTP POST received with event/title/message/timestamp/level.');
+
+    // 16B: unreachable endpoint degrades to false without throwing
+    const deadDelivered = await dispatchWebhook(
+      'http://127.0.0.1:1/unreachable',
+      {
+        event: 'DEAD_EVENT',
+        title: 'Dead',
+        message: 'no listener',
+        timestamp: new Date().toISOString(),
+        level: 'error',
+      },
+      500
+    );
+    assert.strictEqual(deadDelivered, false, 'unreachable webhook must resolve false, never throw');
+    console.log('  PASS [16B - Webhook Fault Tolerance]: unreachable endpoint returned false silently within the timeout.');
+
+    // 16C: notifyOperator must stay non-blocking and never throw when every channel fails
+    setNotifyWebhook(undefined);
+    const startedAt = Date.now();
+    assert.doesNotThrow(() => {
+      notifyOperator('Lease Lost', 'synthetic failure probe', {
+        webhookUrl: 'http://127.0.0.1:1/also-dead',
+        native: false,
+      });
+    }, 'notifyOperator must swallow webhook failures');
+    const elapsed = Date.now() - startedAt;
+    assert.ok(
+      elapsed < 500,
+      `notifyOperator must return immediately (took ${elapsed}ms); a blocking notify would stall the daemon loop`
+    );
+    console.log(`  PASS [16C - Non-Blocking & Silent]: returned in ${elapsed}ms with a dead webhook and no throw.`);
+
+    // 16D: resolution precedence (explicit > process-level config > env) and schema strictness
+    const { FerryCatConfigFileSchema } = await import('../src/schemas.js');
+
+    const parsedCfg = FerryCatConfigFileSchema.parse({
+      daemon: { webhook_url: 'http://127.0.0.1:9999/from-config' },
+    });
+    assert.strictEqual(
+      parsedCfg.daemon.webhook_url,
+      'http://127.0.0.1:9999/from-config',
+      'DaemonConfigSchema must accept webhook_url'
+    );
+    assert.strictEqual(
+      FerryCatConfigFileSchema.parse({}).daemon.webhook_url,
+      undefined,
+      'webhook_url must stay optional for backward compatibility'
+    );
+    assert.throws(
+      () => FerryCatConfigFileSchema.parse({ daemon: { webhook_url: 'not-a-url' } }),
+      'webhook_url must reject non-URL values'
+    );
+
+    setNotifyWebhook('http://127.0.0.1:9999/registered');
+    assert.strictEqual(getNotifyWebhook(), 'http://127.0.0.1:9999/registered');
+    setNotifyWebhook('   ');
+    assert.strictEqual(getNotifyWebhook(), undefined, 'blank registration must clear the endpoint');
+
+    // A notify with no explicit url falls back to the process-level registration.
+    notifyOperator('Task Finished', 'fallback probe', { native: false });
+    setNotifyWebhook(undefined);
+
+    const exampleRaw = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '../ferrycat.config.example.json'), 'utf8')
+    ) as { daemon?: { webhook_url?: string } };
+    assert.ok(
+      typeof exampleRaw.daemon?.webhook_url === 'string',
+      'ferrycat.config.example.json must document webhook_url'
+    );
+    assert.doesNotThrow(
+      () => FerryCatConfigFileSchema.parse(exampleRaw),
+      'example config must remain schema-valid after adding webhook_url'
+    );
+    console.log('  PASS [16D - Config Resolution]: schema accepts webhook_url, rejects bad URLs, and stays backward compatible.');
+
+    // 16E: Cross-platform native command escaping (win32 PowerShell here-string & darwin argv)
+    const hostileTitle = `Title "'@\n$(evil) <tag>`;
+    const hostileMsg = `Msg "'@\nInvoke-Expression 'bad'`;
+    const winCmd = resolveNativeCommand(hostileTitle, hostileMsg, 'win32');
+    assert.strictEqual(winCmd.cmd, 'powershell');
+    const psScript = winCmd.args[winCmd.args.length - 1];
+    assert.ok(
+      !psScript.includes('\n\'@\nInvoke-Expression'),
+      'win32 toast XML must escape single quotes to &apos; so here-string cannot be escaped'
+    );
+    assert.ok(psScript.includes('&apos;@'), 'escaped XML entity must be present');
+
+    const macCmd = resolveNativeCommand(hostileTitle, hostileMsg, 'darwin');
+    assert.strictEqual(macCmd.cmd, 'osascript');
+    assert.strictEqual(macCmd.args[macCmd.args.length - 2], hostileTitle);
+    assert.strictEqual(macCmd.args[macCmd.args.length - 1], hostileMsg);
+    assert.ok(
+      macCmd.args.includes('on run argv'),
+      'darwin toast must pass title/message via argv rather than string interpolation'
+    );
+
+    const linuxCmd = resolveNativeCommand(hostileTitle, hostileMsg, 'linux');
+    assert.strictEqual(linuxCmd.cmd, 'notify-send');
+    assert.deepStrictEqual(linuxCmd.args, ['--app-name=FerryCat', hostileTitle, hostileMsg]);
+    console.log('  PASS [16E - Native Command Hardening]: win32/darwin/linux commands verified against injection.');
+
+    // 16F: Mutation task ('implementation' | 'test_generation') post-edit fulfillment & dual SHA-256 audit trail
+    const { dir: mutDir, dbPath: mutDbPath, cleanup: mutCleanup } = createTempWorkspace('mutation-fulfill');
+    const mutEngine = new FerryCatEngine({
+      dbPath: mutDbPath,
+      defaultAgentName: 'antigravity',
+      fingerprintRetryDelayMs: 5,
+    });
+    try {
+      const targetFile = path.join(mutDir, 'feature.ts');
+      const newArtifactFile = path.join(mutDir, 'feature.test.ts');
+      const preContent = 'export const status = "todo";\n';
+      const postContent = 'export const status = "implemented";\nexport function runFeature(): boolean { return true; }\n';
+      const artifactContent = 'import { runFeature } from "./feature.js";\nconsole.log(runFeature());\n';
+      fs.writeFileSync(targetFile, preContent, 'utf8');
+
+      const preSha = crypto.createHash('sha256').update(Buffer.from(preContent, 'utf8')).digest('hex');
+      const postSha = crypto.createHash('sha256').update(Buffer.from(postContent, 'utf8')).digest('hex');
+      const artifactSha = crypto.createHash('sha256').update(Buffer.from(artifactContent, 'utf8')).digest('hex');
+
+      const dispatchedMut = mutEngine.dispatchContract({
+        target_agent: 'workbuddy',
+        task_type: 'implementation',
+        title: 'Implement runFeature in feature.ts',
+        context_summary: 'Modify feature.ts and add feature.test.ts',
+        workspace_root: mutDir,
+        pointers: [{ path: 'feature.ts' }],
+      });
+
+      const polledMut = mutEngine.pollNextTask({ agent_id: 'workbuddy' });
+      assert.strictEqual(polledMut.has_task, true);
+      assert.strictEqual(polledMut.status, 'CLAIMED');
+      const mutClaimToken = polledMut.contract?.claim_token;
+
+      // Worker modifies pointer file on disk and creates a new test artifact file
+      fs.writeFileSync(targetFile, postContent, 'utf8');
+      fs.writeFileSync(newArtifactFile, artifactContent, 'utf8');
+
+      // Pre-flight verifyContract on CLAIMED implementation task should be valid & fulfillable while reporting modified files
+      const preflight = mutEngine.verifyContract({
+        contract_id: dispatchedMut.contract_id,
+        agent_id: 'workbuddy',
+      });
+      assert.strictEqual(preflight.valid, true, 'CLAIMED implementation task with edited pointer file must be valid');
+      assert.strictEqual(preflight.fulfillable, true, 'CLAIMED implementation task with edited pointer file must be fulfillable');
+      assert.strictEqual(preflight.dirty_files.length, 1);
+      assert.strictEqual(preflight.dirty_files[0].path, 'feature.ts');
+
+      // Fulfill contract: must succeed and commit post-mutation SHA-256 into verified_sha256
+      const fulfilledMut = mutEngine.fulfillContract({
+        contract_id: dispatchedMut.contract_id,
+        agent_id: 'workbuddy',
+        claim_token: mutClaimToken,
+        result_summary: 'Implemented runFeature and added unit test',
+        artifacts_pointers: [
+          { path: 'feature.ts', description: 'Implemented runFeature' },
+          { path: 'feature.test.ts', description: 'Added unit test' },
+        ],
+      });
+      assert.strictEqual(fulfilledMut.ok, true);
+      assert.strictEqual(fulfilledMut.status, 'COMPLETED');
+
+      const inspectedMut = mutEngine.inspectMeshState({ contract_id: dispatchedMut.contract_id });
+      const completedContract = inspectedMut.contracts[0];
+      assert.strictEqual(completedContract.status, 'COMPLETED');
+      assert.strictEqual(
+        completedContract.pointers[0].sha256,
+        preSha,
+        'pointers[0].sha256 must preserve the pre-mutation baseline SHA-256'
+      );
+      assert.strictEqual(
+        completedContract.verified_sha256?.['feature.ts'],
+        postSha,
+        'verified_sha256["feature.ts"] must record the post-mutation SHA-256'
+      );
+      assert.strictEqual(
+        completedContract.verified_sha256?.['feature.test.ts'],
+        artifactSha,
+        'verified_sha256["feature.test.ts"] must record the new artifact SHA-256'
+      );
+      assert.notStrictEqual(preSha, postSha);
+
+      // Deleting a pointer file during an implementation task must still fail with FILE_MISSING
+      const delDispatch = mutEngine.dispatchContract({
+        target_agent: 'workbuddy',
+        task_type: 'test_generation',
+        title: 'Deleted pointer guard test',
+        context_summary: 'Ensure deleting a pointer file still blocks fulfillment',
+        workspace_root: mutDir,
+        pointers: [{ path: 'feature.ts' }],
+      });
+      const delPolled = mutEngine.pollNextTask({ agent_id: 'workbuddy' });
+      fs.unlinkSync(targetFile);
+      const delFulfill = mutEngine.fulfillContract({
+        contract_id: delDispatch.contract_id,
+        agent_id: 'workbuddy',
+        claim_token: delPolled.contract?.claim_token,
+        result_summary: 'Deleted file by mistake',
+      });
+      assert.strictEqual(delFulfill.ok, false);
+      assert.strictEqual(delFulfill.status, 'RETRY_NEEDED');
+      assert.strictEqual(delFulfill.dirty_files?.[0].reason, 'FILE_MISSING');
+      console.log('  PASS [16F - Mutation Task Fulfillment]: implementation/test_generation commits post-mutation SHA-256 while preserving pre-mutation baseline.');
+    } finally {
+      mutEngine.close();
+      mutCleanup();
+    }
+  } finally {
+    setNotifyWebhook(undefined);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
 async function main(): Promise<void> {
   console.log('==============================================================');
   console.log(' FerryCat Offline Verification Suite (Node ' + process.version + ')');
@@ -2510,9 +2777,10 @@ async function main(): Promise<void> {
   await test13_Step0SupervisorHardening();
   await test14_Step1ControlledDaemonAndCasLeases();
   await test15_DemoSandboxSimulation();
+  await test16_DesktopNotificationAndWebhook();
 
   console.log('\n==============================================================');
-  console.log(' ALL 15 TEST SUITES PASSED GREEN');
+  console.log(' ALL 16 TEST SUITES PASSED GREEN');
   console.log('==============================================================');
 }
 

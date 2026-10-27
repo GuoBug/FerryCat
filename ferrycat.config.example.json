@@ -5,7 +5,8 @@
     "lease_ttl_sec": 30,
     "heartbeat_interval_ms": 5000,
     "poll_interval_ms": 1000,
-    "notify": true
+    "notify": true,
+    "webhook_url": "http://127.0.0.1:8787/ferrycat-events"
   },
   "agents": {
     "workbuddy": {

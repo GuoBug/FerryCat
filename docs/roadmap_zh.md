@@ -56,8 +56,8 @@
 
 ---
 
-## Phase 3: 主动唤醒与常驻守护编排引擎 (Active Wake-up & Daemon Orchestration)
+## Phase 3: 主动唤醒与常驻守护编排引擎 (Active Wake-up & Daemon Orchestration — 已完成)
 
 - [x] **FC-401（后台常驻守护与服务管理 `ferrycat daemon`）**：基于 SQLite WAL 短事务原子 CAS 租约（`daemon_locks`）与进程树严密监管（`taskkill /T /F` 与 `kill(-pgid)`）落地，无长锁无膨胀（ADR-0005，已在 v0.3.3 完成）。
 - [x] **FC-402（配置驱动声明式 Handler 与脚本执行）**：引入声明式配置文件（`ferrycat.config.json`），强绑定白名单执行文件，彻底消除任意自由 Shell 注入面（ADR-0005，已在 v0.3.3 完成）。
-- [ ] **FC-403（桌面系统通知与本地事件 Hook）**：支持操作系统级原生桌面通知（Windows Toast / macOS Notification）与本地 HTTP Webhook，在契约生成、认领被主动拉起、或终态完成/熔断时即时通知开发者或外部流水线。
+- [x] **FC-403（桌面系统通知与本地事件 Hook）**：支持操作系统级原生桌面通知（Windows WinRT Toast / macOS osascript argv / Linux notify-send，全异步非阻塞 `unref` + `error` 吞吐保护）与本地 HTTP Webhook（`webhook_url` / `FERRYCAT_WEBHOOK_URL`，3s 超时熔断），在契约认领、终态完成/失败或租约丢失时即时唤醒开发者或外部流水线。

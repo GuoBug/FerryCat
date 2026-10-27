@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { FileFingerprint, FilePointerInput } from './types.js';
+import type { ArtifactPointer, FileFingerprint, FilePointerInput } from './types.js';
 
 const SENSITIVE_PATTERNS: RegExp[] = [
   /(^|[\\/])\.env(\..+)?$/i,
@@ -201,6 +201,124 @@ export function verifyAllPointers(
     };
   }
   return { valid: true, dirtyFiles: [] };
+}
+
+/**
+ * Verifies pointer files at fulfillment/pre-flight time for mutation tasks
+ * (`implementation` | `test_generation`).
+ *
+ * Unlike read-only review tasks (`code_review` | `architecture_audit`), mutation tasks
+ * are expected to modify pointer files on disk after claiming the contract. Therefore:
+ * - `SECURITY_REJECTED` (workspace escape / sensitive file / symlink escape) and
+ *   `FILE_MISSING` (deleted pointer target) remain hard failures (`valid: false`).
+ * - `SIZE_MISMATCH` and `CONTENT_CHANGED` are permitted; modified files are recorded in
+ *   `dirtyFiles` for audit visibility, and every pointer's post-mutation SHA-256 is
+ *   captured in `verifiedShaMap` so `verified_sha256` records the exact delivered state
+ *   while `pointers` preserves the pre-mutation baseline.
+ */
+export function verifyAndSnapshotMutationPointers(
+  workspaceRoot: string,
+  fingerprints: FileFingerprint[],
+  artifacts?: Array<ArtifactPointer | string>
+): {
+  valid: boolean;
+  firstFailure?: FingerprintVerificationResult;
+  dirtyFiles: PointerDriftItem[];
+  verifiedShaMap: Record<string, string>;
+} {
+  const dirtyFiles: PointerDriftItem[] = [];
+  const blockingFailures: PointerDriftItem[] = [];
+  const verifiedShaMap: Record<string, string> = {};
+
+  for (const fp of fingerprints) {
+    let absPath: string;
+    try {
+      absPath = assertSafePointerPath(workspaceRoot, fp.path);
+    } catch (err) {
+      const item: PointerDriftItem = {
+        path: fp.path,
+        reason: 'SECURITY_REJECTED',
+        detail: err instanceof Error ? err.message : String(err),
+      };
+      dirtyFiles.push(item);
+      blockingFailures.push(item);
+      continue;
+    }
+
+    if (!fs.existsSync(absPath) || !fs.statSync(absPath).isFile()) {
+      const item: PointerDriftItem = {
+        path: fp.path,
+        reason: 'FILE_MISSING',
+        detail: `File missing on worker disk: "${fp.path}"`,
+      };
+      dirtyFiles.push(item);
+      blockingFailures.push(item);
+      continue;
+    }
+
+    const stat = fs.statSync(absPath);
+    const buffer = fs.readFileSync(absPath);
+    const currentSha256 = computeFullFileSha256(buffer);
+    verifiedShaMap[fp.path] = currentSha256;
+
+    if (stat.size !== fp.size) {
+      dirtyFiles.push({
+        path: fp.path,
+        reason: 'SIZE_MISMATCH',
+        detail: `File size changed for "${fp.path}": baseline ${fp.size} bytes -> post-mutation ${stat.size} bytes`,
+      });
+    } else if (currentSha256 !== fp.sha256) {
+      dirtyFiles.push({
+        path: fp.path,
+        reason: 'CONTENT_CHANGED',
+        detail: `File content SHA-256 updated for "${fp.path}": baseline ${fp.sha256.slice(0, 16)}... -> post-mutation ${currentSha256.slice(0, 16)}...`,
+      });
+    }
+  }
+
+  if (artifacts && artifacts.length > 0) {
+    for (const entry of artifacts) {
+      const rawArtifact = typeof entry === 'string' ? entry : entry.path;
+      if (!rawArtifact || verifiedShaMap[rawArtifact]) continue;
+      let absArtifact: string;
+      try {
+        absArtifact = assertSafePointerPath(workspaceRoot, rawArtifact);
+      } catch (err) {
+        const item: PointerDriftItem = {
+          path: rawArtifact,
+          reason: 'SECURITY_REJECTED',
+          detail: err instanceof Error ? err.message : String(err),
+        };
+        dirtyFiles.push(item);
+        blockingFailures.push(item);
+        continue;
+      }
+
+      if (fs.existsSync(absArtifact) && fs.statSync(absArtifact).isFile()) {
+        const buffer = fs.readFileSync(absArtifact);
+        verifiedShaMap[rawArtifact] = computeFullFileSha256(buffer);
+      }
+    }
+  }
+
+  if (blockingFailures.length > 0) {
+    return {
+      valid: false,
+      firstFailure: {
+        valid: false,
+        reason: blockingFailures[0].reason,
+        detail: blockingFailures[0].detail,
+      },
+      dirtyFiles,
+      verifiedShaMap: {},
+    };
+  }
+
+  return {
+    valid: true,
+    dirtyFiles,
+    verifiedShaMap,
+  };
 }
 
 export function verifySingleRun(

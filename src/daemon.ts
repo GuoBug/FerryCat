@@ -14,6 +14,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { FerryCatEngine, expandTilde } from './engine.js';
 import {
   FerryCatConfigFileSchema,
@@ -74,16 +75,209 @@ export function loadFerryCatConfig(customConfigPath?: string): {
   };
 }
 
-export function notifyOperator(title: string, message: string): void {
+export type NotifyLevel = 'info' | 'warn' | 'error';
+
+export interface NotifyOptions {
+  level?: NotifyLevel;
+  /** Stable machine-readable event name forwarded to the webhook payload. */
+  event?: string;
+  /** Explicit webhook endpoint; falls back to FERRYCAT_WEBHOOK_URL when omitted. */
+  webhookUrl?: string;
+  /** Set false to suppress the native OS toast (e.g. in CI or headless runs). */
+  native?: boolean;
+}
+
+export interface WebhookPayload {
+  event: string;
+  title: string;
+  message: string;
+  timestamp: string;
+  level: NotifyLevel;
+}
+
+const NOTIFY_WEBHOOK_TIMEOUT_MS = 3000;
+
+/**
+ * Process-level webhook endpoint registered by the active daemon instance. Call sites deep inside
+ * signal handlers cannot reach `this`, so the resolved config value lives here instead of being
+ * threaded through every notifyOperator() call.
+ */
+let activeWebhookUrl: string | undefined;
+
+export function setNotifyWebhook(url: string | undefined): void {
+  const trimmed = (url ?? '').trim();
+  activeWebhookUrl = trimmed.length > 0 ? trimmed : undefined;
+}
+
+export function getNotifyWebhook(): string | undefined {
+  return activeWebhookUrl;
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+/**
+ * Resolve the platform-native notification command (FC-403).
+ * Windows uses a WinRT Toast driven by the PowerShell host's own AppId so no module install is
+ * required; macOS uses `display notification`; Linux uses libnotify's `notify-send`.
+ */
+export function resolveNativeCommand(
+  title: string,
+  message: string,
+  platform: NodeJS.Platform = process.platform
+): { cmd: string; args: string[] } {
+  if (platform === 'win32') {
+    const toastXml =
+      `<toast><visual><binding template="ToastText02">` +
+      `<text id="1">${escapeXml(title)}</text><text id="2">${escapeXml(message)}</text>` +
+      `</binding></visual></toast>`;
+    // Reuse PowerShell's own registered AppId so the toast renders without an installed module.
+    const appId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe';
+    const script = [
+      "$ErrorActionPreference = 'Stop'",
+      '[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null',
+      '[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null',
+      `$xml = New-Object Windows.Data.Xml.Dom.XmlDocument`,
+      `$xml.LoadXml(@'`,
+      toastXml,
+      `'@)`,
+      `$toast = New-Object Windows.UI.Notifications.ToastNotification $xml`,
+      `[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('${appId}').Show($toast)`,
+    ].join('\n');
+    return {
+      cmd: 'powershell',
+      args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+    };
+  }
+
+  if (platform === 'darwin') {
+    return {
+      cmd: 'osascript',
+      args: [
+        '-e',
+        'on run argv',
+        '-e',
+        'display notification (item 2 of argv) with title (item 1 of argv)',
+        '-e',
+        'end run',
+        '--',
+        title,
+        message,
+      ],
+    };
+  }
+
+  return { cmd: 'notify-send', args: ['--app-name=FerryCat', title, message] };
+}
+
+/**
+ * Fire-and-forget native toast. Deliberately synchronous-returning: the child is spawned,
+ * immediately unref'd, and every failure path (missing binary, EPERM, sandbox denial) is
+ * swallowed. A notification must never block or crash the daemon event loop.
+ */
+function dispatchNativeNotification(title: string, message: string): void {
+  try {
+    const { cmd, args } = resolveNativeCommand(title, message);
+    const child = spawn(cmd, args, { stdio: 'ignore', windowsHide: true, detached: true });
+    // Without an 'error' listener, a missing binary surfaces as an uncaughtException and kills us.
+    child.on('error', () => {});
+    child.unref();
+  } catch {
+    // Silent by contract (FC-403 defense red line).
+  }
+}
+
+/**
+ * Deliver one webhook payload. Exported so tests can await the real HTTP round-trip; production
+ * call sites use the fire-and-forget wrapper below.
+ */
+export async function dispatchWebhook(
+  url: string,
+  payload: WebhookPayload,
+  timeoutMs: number = NOTIFY_WEBHOOK_TIMEOUT_MS
+): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  if (typeof timer.unref === 'function') timer.unref();
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', connection: 'close' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    // Drain the body so the socket can be released even if the receiver wrote something.
+    await res.text().catch(() => '');
+    return res.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Derive a severity from the notice title so existing call sites gain levels without churn. */
+function inferLevel(title: string): NotifyLevel {
+  if (/error|fail|lost|exhausted|crash/i.test(title)) return 'error';
+  if (/warn|unhandled|stale|timeout|retry/i.test(title)) return 'warn';
+  return 'info';
+}
+
+/** Derive a stable SCREAMING_SNAKE event name (e.g. "Lease Lost" -> "LEASE_LOST"). */
+function inferEvent(title: string): string {
+  return title
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+export function notifyOperator(
+  title: string,
+  message: string,
+  opts: NotifyOptions = {}
+): void {
+  const level: NotifyLevel = opts.level ?? inferLevel(title);
+  const event = opts.event ?? inferEvent(title);
+  const webhookUrl = (
+    opts.webhookUrl ??
+    activeWebhookUrl ??
+    process.env.FERRYCAT_WEBHOOK_URL ??
+    ''
+  ).trim();
+
   try {
     const timestamp = new Date().toISOString();
     // Always emit structured line to stderr/stdout
-    process.stderr.write(`[FerryCat Daemon Notice] ${timestamp} | ${title}: ${message}\n`);
+    process.stderr.write(
+      `[FerryCat Daemon Notice] ${timestamp} | ${level.toUpperCase()} | ${title}: ${message}\n`
+    );
   } catch (err: unknown) {
     if (err && typeof err === 'object' && 'code' in err && (err as { code: string }).code === 'EPIPE') {
       // EPIPE indicates downstream logger closed its pipe early; safe to swallow silently
       return;
     }
+  }
+
+  // Native toast: skipped when explicitly disabled or when the caller is headless.
+  if (opts.native !== false) {
+    dispatchNativeNotification(title, message);
+  }
+
+  // Webhook: never awaited, never rejects into the caller.
+  if (webhookUrl) {
+    void dispatchWebhook(webhookUrl, {
+      event,
+      title,
+      message,
+      timestamp: new Date().toISOString(),
+      level,
+    });
   }
 }
 
@@ -98,6 +292,7 @@ export class FerryCatDaemon {
   public readonly ownerToken: string;
   public readonly targetAgentFilter?: string;
   public readonly notifyEnabled: boolean;
+  public readonly webhookUrl?: string;
 
   private isRunning: boolean = false;
   private isLeader: boolean = false;
@@ -132,6 +327,13 @@ export class FerryCatDaemon {
 
     this.targetAgentFilter = options.targetAgent;
     this.notifyEnabled = options.notify ?? config.daemon.notify ?? true;
+    this.webhookUrl = config.daemon.webhook_url;
+
+    // FC-403: expose the declarative webhook to notifyOperator() call sites when configured,
+    // without wiping a previously registered endpoint when a secondary instance omits webhook_url.
+    if (config.daemon.webhook_url !== undefined) {
+      setNotifyWebhook(config.daemon.webhook_url);
+    }
   }
 
   public registerSignalHandlers(): void {
@@ -384,9 +586,19 @@ export class FerryCatDaemon {
       );
 
       if (this.notifyEnabled) {
+        const finishLevel: NotifyLevel = execResult.ok
+          ? 'info'
+          : execResult.status === 'RETRY_NEEDED'
+          ? 'warn'
+          : 'error';
         notifyOperator(
           'Task Finished',
-          `Contract ${contract.contract_id} concluded with status '${execResult.status}' (ok=${execResult.ok})`
+          `Contract ${contract.contract_id} concluded with status '${execResult.status}' (ok=${execResult.ok})`,
+          {
+            level: finishLevel,
+            event: execResult.ok ? 'TASK_FINISHED' : 'TASK_FAILED',
+            webhookUrl: this.webhookUrl,
+          }
         );
       }
 

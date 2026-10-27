@@ -402,6 +402,14 @@ export const DaemonConfigSchema = z
     heartbeat_interval_ms: z.number().int().min(1000).max(30000).default(5000),
     poll_interval_ms: z.number().int().min(200).max(30000).default(1000),
     notify: z.boolean().default(true),
+    webhook_url: z
+      .string()
+      .url()
+      .max(512)
+      .optional()
+      .describe(
+        'Optional HTTP endpoint receiving daemon lifecycle events as JSON (FC-403). Falls back to the FERRYCAT_WEBHOOK_URL environment variable. Delivery is fire-and-forget with a 3s timeout; failures are swallowed so notifications can never affect lifecycle correctness.'
+      ),
   })
   .strict()
   .refine(
