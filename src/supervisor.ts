@@ -12,6 +12,7 @@
  * See docs/audits/2026-10-24-phase-3-multi-agent-consensus-audit_zh.md.
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { expandTilde, type FerryCatEngine } from './engine.js';
 import { FulfillContractSchema } from './schemas.js';
@@ -194,10 +195,18 @@ export interface SupervisedChild {
 
 const activeChildren = new Set<SupervisedChild>();
 
-function resolveExecTarget(spec: ExecSpec): { command: string; args: string[]; shell: boolean } {
+function resolveExecTarget(spec: ExecSpec, baseDir?: string): { command: string; args: string[]; shell: boolean } {
   const extraArgs = spec.args ?? [];
   if (spec.execFile) {
-    const script = path.resolve(expandTilde(spec.execFile));
+    const raw = expandTilde(spec.execFile);
+    let script: string;
+    if (path.isAbsolute(raw)) {
+      script = raw;
+    } else if (baseDir && fs.existsSync(path.resolve(baseDir, raw))) {
+      script = path.resolve(baseDir, raw);
+    } else {
+      script = path.resolve(raw);
+    }
     const ext = path.extname(script).toLowerCase();
     if (ext === '.js' || ext === '.mjs' || ext === '.cjs') {
       return { command: process.execPath, args: [script, ...extraArgs], shell: false };
@@ -360,7 +369,7 @@ export async function executeTaskAndFulfill(
   const { env, dropped } = buildChildEnv(contract, spec.passEnv ?? []);
   emit({ event: 'ENV_SANITIZED', dropped_vars: dropped, passed_explicitly: spec.passEnv?.length ?? 0 });
 
-  const target = resolveExecTarget(spec);
+  const target = resolveExecTarget(spec, contract.workspace_root);
   let child: ChildProcess;
   try {
     child = spawn(target.command, target.args, {

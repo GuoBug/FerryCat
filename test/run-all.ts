@@ -2885,6 +2885,93 @@ async function test16_DesktopNotificationAndWebhook(): Promise<void> {
   }
 }
 
+async function test17_StaticAnalysisGate(): Promise<void> {
+  console.log('\n[Test 17] Static Analysis Gate & Verification Harness (Phase 3 Step 2)');
+  const gate = await import('../scripts/static-analysis-gate.cjs');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ferrycat-test17-'));
+
+  try {
+    // 17A: False Positive Guard
+    const fpFile = path.join(tempDir, 'fp.ts');
+    fs.writeFileSync(
+      fpFile,
+      [
+        'const svc = "disk-usage-monitoring-agent";',
+        'const doc = "risk-management-platform-notes";',
+        'const f = "mask-sensitive-data-before-logging";',
+        'const q = "task-queue-worker-config-identifier";',
+        'function f(s){ return /a==b/.test(s); }',
+        'const msg = `line one\n a == b \nline three`;',
+        'const flag = true; // compare a == b',
+        '/* block comment a == b */',
+        'const debuggerFlag = true;',
+        'obj.eval("test");',
+      ].join('\n')
+    );
+    const fpRes = gate.runAnalysis(tempDir, ['fp.ts']);
+    assert.strictEqual(fpRes.approved, true);
+    assert.strictEqual(fpRes.errorCount, 0);
+    assert.strictEqual(fpRes.warningCount, 0);
+    assert.strictEqual(fpRes.findings.length, 0);
+    console.log('  PASS [17A - False-Positive Guard]: string tokens (task-, disk-), regex literals, multi-line templates, and comments passed with 0 findings.');
+
+    // 17B: True-Positive Secret Detection
+    const secFile = path.join(tempDir, 'sec.ts');
+    fs.writeFileSync(
+      secFile,
+      [
+        'const k1 = "sk-proj-AbCdEf0123456789AbCdEf0123456789";',
+        'const k2 = "sk-svcacct-AbCdEf0123456789AbCdEf0123456789";',
+        'const k3 = "sk-AbCdEf0123456789AbCdEf0123456789";',
+      ].join('\n')
+    );
+    const secRes = gate.runAnalysis(tempDir, ['sec.ts']);
+    assert.strictEqual(secRes.approved, false);
+    assert.strictEqual(secRes.errorCount, 3);
+    assert.ok(secRes.findings.every((f: string) => f.includes('SEC-001')));
+    console.log('  PASS [17B - Secret Detection]: sk-proj-, sk-svcacct-, and classic sk- keys detected with SEC-001.');
+
+    // 17C: AST Injection Rules
+    const astFile = path.join(tempDir, 'ast.ts');
+    fs.writeFileSync(
+      astFile,
+      [
+        'eval?.("test");',
+        '(0, eval)("test");',
+        'Function("return 1")();',
+        'if (a == b) { debugger; }',
+      ].join('\n')
+    );
+    const astRes = gate.runAnalysis(tempDir, ['ast.ts']);
+    assert.strictEqual(astRes.approved, false);
+    assert.ok(astRes.findings.some((f: string) => f.includes('AST-001')));
+    assert.ok(astRes.findings.some((f: string) => f.includes('AST-002')));
+    assert.ok(astRes.findings.some((f: string) => f.includes('AST-003')));
+    console.log('  PASS [17C - AST Rules]: eval?.(), (0,eval)(), Function(), loose equality, and debugger caught.');
+
+    // 17D: JSON Secret Scanning
+    const jsonFile = path.join(tempDir, 'config.json');
+    fs.writeFileSync(jsonFile, JSON.stringify({ api_key: 'sk-proj-AbCdEf0123456789AbCdEf0123456789' }, null, 2));
+    const jsonRes = gate.runAnalysis(tempDir, ['config.json']);
+    assert.strictEqual(jsonRes.approved, false);
+    assert.strictEqual(jsonRes.errorCount, 1);
+    assert.ok(jsonRes.findings[0].includes('SEC-001'));
+    console.log('  PASS [17D - JSON Secret Scanning]: .json files undergo JSON syntax validation and secret scanning.');
+
+    // 17E: Path Containment & IO Safety
+    const outRes = gate.runAnalysis(tempDir, ['../outside.js']);
+    assert.strictEqual(outRes.approved, false);
+    assert.ok(outRes.findings[0].includes('SEC-002'));
+
+    const hiddenRes = gate.runAnalysis(tempDir, ['..hidden.js']);
+    assert.ok(!hiddenRes.findings[0].includes('SEC-002'));
+    assert.ok(hiddenRes.findings[0].includes('IO-001'));
+    console.log('  PASS [17E - Workspace Containment & IO]: ../ escapes rejected with SEC-002, ..hidden.js allowed, IO safe.');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 async function main(): Promise<void> {
   console.log('==============================================================');
   console.log(' FerryCat Offline Verification Suite (Node ' + process.version + ')');
@@ -2906,9 +2993,10 @@ async function main(): Promise<void> {
   await test14_Step1ControlledDaemonAndCasLeases();
   await test15_DemoSandboxSimulation();
   await test16_DesktopNotificationAndWebhook();
+  await test17_StaticAnalysisGate();
 
   console.log('\n==============================================================');
-  console.log(' ALL 16 TEST SUITES PASSED GREEN');
+  console.log(' ALL 17 TEST SUITES PASSED GREEN');
   console.log('==============================================================');
 }
 

@@ -12,8 +12,8 @@
     "workbuddy": {
       "handlers": {
         "code_review": {
-          "exec_file": "./scripts/review-handler.js",
-          "pass_env": ["CUSTOM_ANALYZER_PATH"]
+          "exec_file": "./scripts/static-analysis-gate.cjs",
+          "pass_env": ["FERRYCAT_WORKSPACE_ROOT", "NODE_ENV"]
         }
       }
     },
