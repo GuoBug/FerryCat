@@ -13,8 +13,8 @@
 [![Glama](https://img.shields.io/badge/Glama-MCP_Server-18181b?style=flat)](https://glama.ai/mcp/servers/GuoBug/FerryCat)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> **FerryCat** (`ferrycat`) 是一个基于 Model Context Protocol (MCP) 与 Node.js 内置 `node:sqlite`（WAL 并发模式）构建的轻量级、确定性跨宿主 AI Agent 工单交接与交叉评审总线。  
-> 专为解决单机桌面环境下不同 IDE 宿主（如 Google Antigravity、WorkBuddy、Claude Code、Cursor）因进程物理隔离导致的上下文割裂、未落盘代码静默盲审与非结构化交付痛点而设计。
+> **FerryCat** (`ferrycat`) 是一个基于 Model Context Protocol (MCP) 与 Node.js 内置 `node:sqlite`（WAL 并发模式）构建的轻量级、确定性跨宿主 AI Agent 工单交接、交叉评审与评测验证底座（Verification Harness）。  
+> 专为解决单机桌面环境下不同 IDE 宿主（如 Google Antigravity、WorkBuddy、Claude Code、Cursor）因进程物理隔离导致的上下文割裂、未落盘代码静默盲审与非结构化交付痛点而设计，支持构建 Actor-Critic 双智能体评测、静态分析守卫（Static Analysis Gate）与 SWE-bench 风格的补丁验证流水线。
 
 <p align="center">
   <img src="https://guobug.github.io/assets/images/flowchart-ferrycat-cross-host-demand-and-workflow.svg" alt="FerryCat 跨宿主契约摆渡全景" width="960" />
@@ -40,7 +40,7 @@ npx ferrycat demo
   ✔ [4/4] Contract Completed    TOCTOU: 0 dirty files | Status: COMPLETED (elapsed: 2.1s)
   🎉 End-to-end multi-agent handoff verified successfully!
 ```
-> 💡 实测数据：2 秒真实拉起子进程、真实心跳续约 1 次、真实检出 `src/calc.ts:6` 的松散相等。详细参数（`--keep` / `--json` / `--no-color`）与底层机制见 [快速上手 §0](#0-先用一条命令看它到底是什么ferrycat-demo)。
+> 💡 实测数据：2 秒真实拉起独立子进程沙箱、真实心跳续约 1 次、通过静态分析与验证守卫真实检出 `src/calc.ts:6` 的松散相等缺陷。详细参数（`--keep` / `--json` / `--no-color`）与底层机制见 [快速上手 §0](#0-先用一条命令看它到底是什么ferrycat-demo)。
 
 ---
 
@@ -155,7 +155,7 @@ MCP 官方的 `Tasks` 规范（2025-11 / 2026-07）解决的是**单条 `Client 
 
 ## 守护进程与声明式处理 (Controlled Daemon, ADR-0005)
 
-FerryCat 支持受控后台守护进程，通过 SQLite 微事务 CAS 租约锁实现多进程安全抢占与故障转移，并强制通过 `ferrycat.config.json` 静态绑定脚本处理器：
+FerryCat 支持受控后台守护进程，通过 SQLite 微事务 CAS 租约锁实现多进程安全抢占与故障转移，并强制通过 `ferrycat.config.json` 静态绑定脚本处理器（非常适合挂载 `tsc` / `eslint` / AST 静态分析守卫，或接入 `Jest` / `Vitest` / `Pytest` 自动化测试套件作为确定性验证 Worker）：
 
 ```bash
 # 单次轮询分发并执行已声明的处理脚本

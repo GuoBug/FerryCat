@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.GuoBug/ferrycat",
   "title": "FerryCat",
-  "description": "Contract-driven cross-host AI agent handoff & review bus over MCP and SQLite WAL",
+  "description": "Contract-driven cross-host AI agent handoff, code review & verification harness over MCP and SQLite WAL",
   "version": "0.4.0",
   "repository": {
     "url": "https://github.com/GuoBug/FerryCat",

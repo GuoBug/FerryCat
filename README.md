@@ -13,8 +13,8 @@
 [![Glama](https://img.shields.io/badge/Glama-MCP_Server-18181b?style=flat)](https://glama.ai/mcp/servers/GuoBug/FerryCat)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> **FerryCat** (`ferrycat`) is a lightweight, deterministic cross-host AI agent handoff and code review bus built on the Model Context Protocol (MCP) and Node.js built-in `node:sqlite` (WAL mode).  
-> Purpose-built to safely bridge isolated desktop IDE agent hosts (such as Google Antigravity, WorkBuddy, Claude Code, and Cursor) across separate OS processes without context drift or blind reviews on stale files.
+> **FerryCat** (`ferrycat`) is a lightweight, deterministic cross-host AI agent handoff, code review, and verification harness built on the Model Context Protocol (MCP) and Node.js built-in `node:sqlite` (WAL mode).  
+> Purpose-built to safely bridge isolated desktop IDE agent hosts (such as Google Antigravity, WorkBuddy, Claude Code, and Cursor) across separate OS processes—enabling Actor-Critic evaluation loops, static analysis gates, and SWE-bench-style patch verification without context drift or blind reviews on stale files.
 
 <p align="center">
   <img src="https://guobug.github.io/assets/images/flowchart-ferrycat-cross-host-demand-and-workflow-en.svg" alt="FerryCat Architecture and Workflow" width="960" />
@@ -40,7 +40,7 @@ npx ferrycat demo
   ✔ [4/4] Contract Completed    TOCTOU: 0 dirty files | Status: COMPLETED (elapsed: 2.1s)
   🎉 End-to-end multi-agent handoff verified successfully!
 ```
-> 💡 Real benchmark: spins up child process, triggers 1 real lease renewal, catches loose equality at `src/calc.ts:6`. Options (`--keep` / `--json` / `--no-color`) detailed in [Quickstart §0](#0-see-what-it-actually-does-first-ferrycat-demo).
+> 💡 Real benchmark: spins up an isolated child-process sandbox, triggers 1 real lease renewal, and runs a static analysis & verification gate that catches loose equality at `src/calc.ts:6`. Options (`--keep` / `--json` / `--no-color`) detailed in [Quickstart §0](#0-see-what-it-actually-does-first-ferrycat-demo).
 
 ---
 
@@ -155,7 +155,7 @@ Holder-side lifecycle controls on a `CLAIMED` contract (all require `agent_id ==
 
 ## Controlled Daemon & Declarative Handlers (ADR-0005)
 
-FerryCat provides a controlled daemon mode governed by SQLite microsecond CAS leases on `daemon_locks` and declarative scripts defined in `ferrycat.config.json`:
+FerryCat provides a controlled daemon mode governed by SQLite microsecond CAS leases on `daemon_locks` and declarative scripts defined in `ferrycat.config.json` (ideal for binding static analysis gates like `tsc` / `eslint` / AST checks or automated test suites like `Jest` / `Vitest` / `Pytest` as deterministic verification workers):
 
 ```bash
 # Run a single dispatch cycle with declared handlers
