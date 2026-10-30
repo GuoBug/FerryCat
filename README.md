@@ -107,6 +107,8 @@ Every state transition is bound to an explicit SQL transaction with optimistic c
                     └───────────┘   └───────────────────┘ └───────────────┘
 ```
 
+> *Note on `POINTER_STALE` vs. `SELF_CONTAINED` Patch Mode (FC-202)*: `POINTER_STALE` is terminal whenever on-disk pointer files mismatch the dispatched SHA-256 baseline, **except** when a read-only contract (`code_review` / `architecture_audit`) attaches a verified unified `git_patch` (`--patch-file`) that satisfies all three gates: every declared file block carries at least one `@@` hunk with real `+`/`-` content (`EMPTY_PATCH_HUNKS` / `EMPTY_PATCH_CONTENT` otherwise), and the touched paths cover every pointer file (`PATCH_DOES_NOT_COVER_POINTERS` otherwise). In that `SELF_CONTAINED` mode, `poll_next_task` returns `patch_mode: "SELF_CONTAINED"` with an explicit `workspace_warning` instructing the reviewer to inspect `git_patch` rather than stale on-disk files.
+
 Holder-side lifecycle controls on a `CLAIMED` contract (all require `agent_id === target_agent`):
 
 | Call | Transition | Guard rails |
@@ -117,7 +119,7 @@ Holder-side lifecycle controls on a `CLAIMED` contract (all require `agent_id ==
 
 ### 2. Full-File SHA-256 Fingerprinting, Pre-Flight Verify & TOCTOU Soft-Failure Buffering (ADR-0004)
 - **Dispatch Snapshot**: `dispatch_contract` reads target files on disk, recording byte `size`, full-file `sha256` (64 hex chars), `first_line`, and `last_line`. If a file was modified within the last 3 seconds, a `warning` is emitted to alert the requester of potential unsaved IDE buffers.
-- **Claim Verification**: `poll_next_task` verifies `Existence -> Byte Size -> Full-File SHA-256` (never rejecting on `mtime_ms` alone to tolerate no-op IDE saves). On mismatch, it waits `150ms` and retries once to rule out transient IDE flushes before marking the contract `POINTER_STALE`.
+- **Claim Verification**: `poll_next_task` verifies `Existence -> Byte Size -> Full-File SHA-256` (never rejecting on `mtime_ms` alone to tolerate no-op IDE saves). On mismatch, it waits `150ms` asynchronously (non-blocking, FC-203) and retries once to rule out transient IDE flushes before marking the contract `POINTER_STALE` — unless the contract is a read-only review/audit carrying a verified unified `git_patch` covering all pointer files (`SELF_CONTAINED` patch mode, FC-202), in which case it claims with an explicit `workspace_warning` and records `__verified_on_disk__: "NO"` and `__unverified_pointers__` in `verified_sha256`.
 - **Pre-Flight Verify (`verify_contract`)**: A strictly read-only check allowing workers or scripts to audit pointer health (`valid: true` vs `valid: false` with dirty files list) before submitting.
 - **TOCTOU Soft-Failure Buffering**: `fulfill_contract` checks on-disk pointer fingerprints. If dirty pointers are detected:
   - **Strike 1** returns `RETRY_NEEDED`, leaves the contract `CLAIMED`, renews the execution window, and lists dirty files with recovery instructions (`git stash` / `git checkout -- <file>`).
@@ -163,7 +165,12 @@ ferrycat-cli daemon --config ./ferrycat.config.json --once
 
 # Start continuous daemon loop
 ferrycat-cli daemon --config ./ferrycat.config.json
+
+# Inspect lease ownership + write-ahead journal health (read-only)
+ferrycat-cli daemon --status
 ```
+
+`daemon --status` reports `journal_degraded` / `last_journal_error` / `journal_path` / `journal_entries` alongside lease ownership, so a silently unwritable write-ahead journal (which would disarm crash recovery) is visible instead of failing mute.
 
 Example `ferrycat.config.json`:
 ```json
@@ -334,14 +341,14 @@ npx ferrycat daemon --agent workbuddy --once
 
 | Tool Name | Role | Transactional Behavior |
 | :--- | :--- | :--- |
-| **`dispatch_contract`** | Requester | Enforces path blacklist $\to$ computes full-file SHA-256 & line bounds $\to$ inserts `SUBMITTED`. |
-| **`poll_next_task`** | Worker | Sweeps expired TTLs (read-before-write) $\to$ claims via `changes === 1` (`CLAIMED`) $\to$ verifies disk SHA-256 (or marks `POINTER_STALE`). |
+| **`dispatch_contract`** | Requester | Enforces path blacklist $\to$ computes full-file SHA-256 & line bounds (plus optional unified `git_patch` / `--patch-file` validation covering pointers, FC-202) $\to$ inserts `SUBMITTED`. |
+| **`poll_next_task`** | Worker | Sweeps expired TTLs (read-before-write) $\to$ claims via `changes === 1` (`CLAIMED`) $\to$ verifies disk SHA-256 with async 150ms retry (FC-203) or falls back to `SELF_CONTAINED` patch mode with `workspace_warning` (otherwise marks `POINTER_STALE`). |
 | **`fulfill_contract`** | Worker | Re-verifies SHA-256 (TOCTOU guard) $\to$ validates Ajv JSON Schema ($\le 2$ retries via `RETRY_NEEDED`, 3rd marks `VALIDATION_FAILED`) $\to$ marks `COMPLETED`. |
 | **`release_contract`** | Worker (holder) | Hands a `CLAIMED` contract back to the queue tail as `SUBMITTED`. `retry_count` is preserved (contract-level circuit breaker); `extend_count` is reset. Max 3 releases; refused once past the absolute lifetime deadline. |
 | **`extend_ttl`** | Worker (holder) | Heartbeat: restarts the execution window (`claimed_at = now`), max 5 renewals and bounded total lifetime. |
 | **`fail_contract`** | Worker (holder) | Marks a `CLAIMED` contract terminal `FAILED` with a mandatory `reason`. |
 | **`verify_contract`** | Worker / Any (Read-Only) | Pre-flight check: validates on-disk pointer files against the baseline SHA-256 without mutating contract state (ADR-0004). |
-| **`inspect_mesh_state`** | Any (Read-Only) | Pure read-only query of contract states, outputs, and dynamic `is_logically_expired` flags. |
+| **`inspect_mesh_state`** | Any (Read-Only) | Pure read-only query of contract states, outputs, `patch_sha256` / `patch_bytes` (opt-in `include_patch: true`), and dynamic `is_logically_expired` flags. |
 
 > 💡 **Architecture Decision Records & Engineering Verification**:
 > - [ADR-0001: Cross-Host SQLite WAL Bus & Human-Scheduled Poll Model](docs/adr/0001-cross-host-sqlite-wal-and-poll-model.md) (Why `node:sqlite` WAL + `poll_next_task` instead of 60s Blocking Hold or single-connection MCP Tasks)

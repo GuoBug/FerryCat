@@ -47,11 +47,11 @@
 
 ---
 
-## Phase 2: Developer Ergonomics & Multi-Workspace Support (v0.4.0 — Partially Complete)
+## Phase 2: Developer Ergonomics & Multi-Workspace Support (v0.4.0 — Completed)
 
 - [x] **FC-201 (`POINTER_STALE` Queue Continuation)**: When the head-of-line contract fails fingerprint verification and transitions to `POINTER_STALE`, continue scanning the remaining candidate contracts in the same `poll_next_task` call without head-of-line blocking (verified in production on 2026-10-27 live mesh contract `fc_1793098036393_aea8bb9b`).
-- [ ] **FC-202 (Self-Contained Git Patch Mode)**: Support optional inline `git diff` patch snapshots for cross-branch or disjoint workspace reviews where both hosts are not on the exact same working tree file state.
-- [ ] **FC-203 (Async Non-Blocking Transient Retry)**: Replace synchronous `Atomics.wait(150ms)` with async microtask scheduling in `pollNextTask` to retire technical debt.
+- [x] **FC-202 (Self-Contained Git Patch Mode)**: Support optional unified `git diff` patch snapshots (`git_patch`, `--patch-file`, max 512KB with diff-header security blacklist, mandatory unified diff header & full pointer-coverage gates, explicit worker `workspace_warning`, and honest `verified_sha256` audit metadata) for cross-branch or disjoint read-only reviews.
+- [x] **FC-203 (Async Non-Blocking Transient Retry)**: Replace synchronous `Atomics.wait(150ms)` with async non-blocking timer scheduling in `verifyFingerprintsWithRetry` and `pollNextTask`, keeping the event loop responsive during transient IDE buffer flushes.
 - [x] **FC-204 (Zero-Config Sandbox Walkthrough `ferrycat demo`)**: Single command `npx ferrycat demo` bootstrapping an isolated temporary sandbox verifying the full 4-stage lifecycle (dispatch $\to$ claim $\to$ execution with 1 heartbeat renewal $\to$ TOCTOU verification $\to$ COMPLETED) with `--keep`, `--json`, and `--no-color` support (delivered in v0.4.0).
 
 ---
@@ -61,3 +61,4 @@
 - [x] **FC-401 (Headless Background Daemon Management `ferrycat daemon`)**: Short-transaction atomic CAS leases on `daemon_locks` table and strict process tree termination (`taskkill /T /F` & `kill(-pgid)`), eliminating table locks and `-wal` file bloat (ADR-0005, delivered in v0.3.3).
 - [x] **FC-402 (Multi-Agent Declarative Config & Safe Execution Boundaries)**: Declarative configuration (`ferrycat.config.json`) strictly binding whitelist script handlers via `execFile`, eliminating arbitrary shell injection vectors (ADR-0005, delivered in v0.3.3).
 - [x] **FC-403 (OS Desktop Notifications & Local Event Hooks)**: Support native OS desktop notifications (Windows WinRT Toast / macOS `osascript` via positional `argv` / Linux `notify-send`, non-blocking `unref` + `error` listener guard) and local HTTP webhooks (`webhook_url` / `FERRYCAT_WEBHOOK_URL`, 3s bounded timeout), alerting developers or external workflows immediately when contracts are claimed, completed, failed, or lose leases.
+- [x] **FC-404 (Write-Ahead Journal `daemon-journal.jsonl` & Crash Self-Healing)**: Pre-spawn write-ahead journaling (`TASK_DISPATCHING` $\to$ `CHILD_SPAWNED` $\to$ `TASK_SETTLED`) and crash recovery (`recoverFromJournal`) on leadership acquisition: salvages crash forensics, quarantines still-alive predecessor/child processes (`QUARANTINED_ORPHAN_ALIVE`), aborts interrupted mutation tasks (`MARKED_FAILED_MUTATION_UNSAFE`) to protect workspace files, and re-queues confirmed-dead read-only tasks (`RELEASED_TO_QUEUE`) while respecting CK-05 PID-reuse safety.

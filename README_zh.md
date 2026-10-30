@@ -107,6 +107,8 @@ MCP 官方的 `Tasks` 规范（2025-11 / 2026-07）解决的是**单条 `Client 
                     └───────────┘   └───────────────────┘ └───────────────┘
 ```
 
+> *关于 `POINTER_STALE` 与 `SELF_CONTAINED` 补丁模式的边界说明 (FC-202)*：当磁盘文件与派单基线 SHA-256 不一致时，工单默认流转至终态 `POINTER_STALE`；**唯一例外**是只读审查类任务（`code_review` / `architecture_audit`）附带了同时通过三重闸门的统一差异补丁（`git_patch` / `--patch-file`）：每个声明文件块必须含至少一个带真实 `+`/`-` 内容的 `@@` hunk（否则 `EMPTY_PATCH_HUNKS` / `EMPTY_PATCH_CONTENT`），且补丁触及路径必须覆盖全部指针文件（否则 `PATCH_DOES_NOT_COVER_POINTERS`）。在此 `SELF_CONTAINED` 模式下，`poll_next_task` 返回 `patch_mode: "SELF_CONTAINED"` 及显式告警 `workspace_warning`，指示审查方以 `git_patch` 为准，且交单后 `verified_sha256` 显式标记 `__verified_on_disk__: "NO"` 与 `__unverified_pointers__`。
+
 持单方对 `CLAIMED` 工单的生命周期控制（均要求 `agent_id === target_agent`）：
 
 | 调用 | 状态流转 | 护栏 |
@@ -117,7 +119,7 @@ MCP 官方的 `Tasks` 规范（2025-11 / 2026-07）解决的是**单条 `Client 
 
 ### 2. 全文件 SHA-256 指纹校验、预检与 TOCTOU 软失败缓冲 (ADR-0004)
 - **派单快照**：`dispatch_contract` 读取磁盘文件，记录字节数 `size`、全文件 `sha256`（64 位 hex）以及非空首末行 `first_line` / `last_line`。若文件在最近 3 秒内刚被修改，返回 `warning` 提醒确认 IDE 缓冲区已落盘。
-- **领单核验**：`poll_next_task` 严格按 `存在性 -> 字节数 size -> 全文件 sha256` 顺序核验（绝不以 `mtime` 单独判死刑，避免 IDE 无变更保存导致误杀）。若不一致，等待 `150ms` 重试一次排除瞬态写入，仍不一致则直接置为终态 `POINTER_STALE`。
+- **领单核验**：`poll_next_task` 严格按 `存在性 -> 字节数 size -> 全文件 sha256` 顺序核验（绝不以 `mtime` 单独判死刑，避免 IDE 无变更保存导致误杀）。若不一致，异步等待 `150ms` 重试一次（非阻塞，FC-203）排除瞬态写入；若仍不一致，除附带完整覆盖指针的 `git_patch` 只读任务降级为 `SELF_CONTAINED` 模式（附带 `workspace_warning`）外，其余直接置为终态 `POINTER_STALE`。
 - **只读预检 (`verify_contract`)**：纯只读命令，允许 Worker 或外部脚本在交单前核验指针健康度（返回 `valid: true/false` 与脏文件清单），不消耗工单状态。
 - **TOCTOU 软失败缓冲**：`fulfill_contract` 在交单时二次核验全文件指纹。若检测到脏指针：
   - **第 1 次超标（Strike 1）**：返回 `RETRY_NEEDED`，工单保持 `CLAIMED` 并自动续期执行窗口，返回脏文件清单与抢救指引（`git stash` / `git checkout -- <file>`）。
@@ -163,6 +165,8 @@ ferrycat-cli daemon --config ./ferrycat.config.json --once
 
 # 启动后台守护主循环
 ferrycat-cli daemon --config ./ferrycat.config.json
+# 只读查询租约归属与预写日志健康度
+ferrycat-cli daemon --status
 ```
 
 配置文件形态示例（`ferrycat.config.json`）：
@@ -333,14 +337,14 @@ npx ferrycat daemon --agent workbuddy --once
 
 | 工具名 | 调用角色 | 职责与事务行为 |
 | :--- | :--- | :--- |
-| **`dispatch_contract`** | 发起方 (Requester) | 校验路径黑名单 $\to$ 计算全文件 SHA-256 与首末行快照 $\to$ 写入 `SUBMITTED`。 |
-| **`poll_next_task`** | 接收方 (Worker) | 先读后写清理超时工单 $\to$ `changes === 1` 原子抢占为 `CLAIMED` $\to$ 校验文件指纹（不匹配则置为 `POINTER_STALE`）。 |
+| **`dispatch_contract`** | 发起方 (Requester) | 校验路径黑名单 $\to$ 计算全文件 SHA-256 与首末行快照（以及可选的 `git_patch` / `--patch-file` 统一补丁及指针覆盖校验，FC-202）$\to$ 写入 `SUBMITTED`。 |
+| **`poll_next_task`** | 接收方 (Worker) | 先读后写清理超时工单 $\to$ `changes === 1` 原子抢占为 `CLAIMED` $\to$ 校验文件指纹（含 150ms 异步重试 FC-203；只读任务附带完整覆盖指针的 `git_patch` 时进入 `SELF_CONTAINED` 模式并返回 `workspace_warning`，否则置为 `POINTER_STALE`）。 |
 | **`verify_contract`** | 接收方 / 任意方 (Read-Only) | 只读预检：校验磁盘文件指纹与基线是否一致，不变更任何状态（ADR-0004）。 |
 | **`fulfill_contract`** | 接收方 (Worker) | 二次复核文件指纹（TOCTOU 软失败缓冲：Strike 1 返回 `RETRY_NEEDED`，Strike 2 置为 `POINTER_STALE` 并在 `salvaged_result` 抢救产出）$\to$ 校验 Ajv JSON Schema $\to$ 通过则置为 `COMPLETED`。 |
 | **`release_contract`** | 持单方 (Worker) | 将 `CLAIMED` 工单退回队尾重新置为 `SUBMITTED`。保留 `retry_count`（工单级熔断配额），清零 `extend_count`。最多退回 3 次；超出绝对生命期上限时拒绝。 |
 | **`extend_ttl`** | 持单方 (Worker) | 心跳续期：重置执行窗口（`claimed_at = now`），最多 5 次，总生命周期有上限。 |
 | **`fail_contract`** | 持单方 (Worker) | 携带必填 `reason` 将 `CLAIMED` 工单置为终态 `FAILED`。 |
-| **`inspect_mesh_state`** | 任意方 (Read-Only) | 纯只读查询工单状态、结构化产出与错误原因，动态计算 `is_logically_expired`。 |
+| **`inspect_mesh_state`** | 任意方 (Read-Only) | 纯只读查询工单状态、结构化产出、`patch_sha256` / `patch_bytes`（可通过 `include_patch: true` 显式读取补丁正文）与错误原因，动态计算 `is_logically_expired`。 |
 
 > 💡 **架构决策记录 (ADR) 与工程验证沉淀**：
 > - [ADR-0001: 采用跨宿主 SQLite WAL 总线与人工调度即时轮询模型](docs/adr/0001-cross-host-sqlite-wal-and-poll-model_zh.md)（为什么采用 `node:sqlite` WAL + `poll_next_task`，而非 60s 长轮询挂起或单连接 MCP Tasks）

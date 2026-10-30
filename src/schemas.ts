@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 export const MAX_JSON_PAYLOAD_BYTES = 1024 * 1024; // 1MB limit (FC-302)
 export const MAX_JSON_DEPTH = 32; // Max nesting depth limit (FC-302)
+export const MAX_GIT_PATCH_BYTES = 512 * 1024; // 512KB limit for self-contained git patches (FC-202)
 
 export function measureJsonDepth(val: unknown, currentDepth: number = 0): number {
   if (currentDepth > MAX_JSON_DEPTH) return currentDepth;
@@ -129,6 +130,19 @@ export const DispatchContractShape = {
     .optional()
     .describe(
       'Execution TTL in seconds once CLAIMED (default: 1800s for review/audit, 300s for implementation/test). Worker must fulfill, extend, release, or fail within this window.'
+    ),
+  git_patch: z
+    .string()
+    .min(1)
+    .optional()
+    .refine(
+      (val) => !val || (val.trim().length > 0 && !val.includes('\0') && Buffer.byteLength(val, 'utf8') <= MAX_GIT_PATCH_BYTES),
+      {
+        message: `git_patch must be non-empty UTF-8 text without null bytes and must not exceed ${MAX_GIT_PATCH_BYTES} bytes (512KB) (FC-202)`,
+      }
+    )
+    .describe(
+      'Optional unified git diff patch payload (max 512KB, FC-202) enabling self-contained cross-branch or disjoint workspace reviews without requiring identical on-disk working tree state.'
     ),
 };
 
@@ -314,6 +328,10 @@ export const InspectMeshStateShape = {
     .max(100)
     .optional()
     .describe('Maximum number of records to return (default: 10)'),
+  include_patch: z
+    .boolean()
+    .optional()
+    .describe('When true, includes the raw git_patch string in each inspected contract (default: false to avoid large inline responses).'),
 };
 
 export const DispatchContractSchema = z.object(DispatchContractShape);
@@ -409,6 +427,14 @@ export const DaemonConfigSchema = z
       .optional()
       .describe(
         'Optional HTTP endpoint receiving daemon lifecycle events as JSON (FC-403). Falls back to the FERRYCAT_WEBHOOK_URL environment variable. Delivery is fire-and-forget with a 3s timeout; failures are swallowed so notifications can never affect lifecycle correctness.'
+      ),
+    journal_path: z
+      .string()
+      .min(1)
+      .max(1024)
+      .optional()
+      .describe(
+        'Optional path to the write-ahead crash recovery journal file (default: daemon-journal.jsonl alongside mesh.db).'
       ),
   })
   .strict()

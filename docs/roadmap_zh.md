@@ -47,11 +47,11 @@
 
 ---
 
-## Phase 2: 开发者体验与跨分支补丁支持 (v0.4.0 — 部分完成)
+## Phase 2: 开发者体验与跨分支补丁支持 (v0.4.0 — 已完成)
 
 - [x] **FC-201（队头陈旧工单非阻塞跳过）**：当队列首条工单因文件变更被判定为 `POINTER_STALE` 时，支持在记录告警的同时继续扫描同批次后续有效工单，彻底解除队头阻塞（已在 2026-10-27 真实总线工单 `fc_1793098036393_aea8bb9b` 漂移跳过并成功认领后续工单实测验收）。
-- [ ] **FC-202（可选 Git Patch 自包含载荷模式）**：针对两端处于不同 Git 分支的场景，支持可选携带轻量 `git diff` 切片，解除对同一磁盘工作树状态的强依赖。
-- [ ] **FC-203（异步非阻塞瞬态重试）**：将 `verifyFingerprintsWithRetry` 中的 `Atomics.wait(150ms)` 升级为异步微任务调度，消灭同步阻塞技术债。
+- [x] **FC-202（可选 Git Patch 自包含载荷模式）**：针对两端处于不同 Git 分支的只读审查场景，支持携带统一差异补丁（`git_patch` / `--patch-file`，512KB 上限、diff 头部敏感路径黑名单、强制统一 diff 头、hunk 实质变更内容与指针全覆盖三重闸门、Worker 端 `workspace_warning` 显式告警及诚实的 `verified_sha256` 审计留痕）。
+- [x] **FC-203（异步非阻塞瞬态重试）**：将 `verifyFingerprintsWithRetry` 与 `pollNextTask` 中的 `Atomics.wait(150ms)` 彻底升级为异步非阻塞定时器等待，消灭同步阻塞技术债并保持事件循环高响应性。
 - [x] **FC-204（零配置沙箱演练 `ferrycat demo`）**：支持单命令 `npx ferrycat demo` 在 OS 临时目录自动构建隔离沙箱并跑通 4 步全流程（派单 $\to$ 认领 $\to$ 执行与真实心跳续约 $\to$ TOCTOU 复核 COMPLETED），并支持 `--keep`、`--json` 与 `--no-color`（v0.4.0 交付）。
 
 ---
@@ -61,3 +61,4 @@
 - [x] **FC-401（后台常驻守护与服务管理 `ferrycat daemon`）**：基于 SQLite WAL 短事务原子 CAS 租约（`daemon_locks`）与进程树严密监管（`taskkill /T /F` 与 `kill(-pgid)`）落地，无长锁无膨胀（ADR-0005，已在 v0.3.3 完成）。
 - [x] **FC-402（配置驱动声明式 Handler 与脚本执行）**：引入声明式配置文件（`ferrycat.config.json`），强绑定白名单执行文件，彻底消除任意自由 Shell 注入面（ADR-0005，已在 v0.3.3 完成）。
 - [x] **FC-403（桌面系统通知与本地事件 Hook）**：支持操作系统级原生桌面通知（Windows WinRT Toast / macOS osascript argv / Linux notify-send，全异步非阻塞 `unref` + `error` 吞吐保护）与本地 HTTP Webhook（`webhook_url` / `FERRYCAT_WEBHOOK_URL`，3s 超时熔断），在契约认领、终态完成/失败或租约丢失时即时唤醒开发者或外部流水线。
+- [x] **FC-404（守护进程预写日志 `daemon-journal.jsonl` 与故障自愈）**：落地任务派发前同步预写日志（`TASK_DISPATCHING` $\to$ `CHILD_SPAWNED` $\to$ `TASK_SETTLED`）及租约接管时的故障恢复引擎（`recoverFromJournal`）：自动打捞崩溃存证，对仍存活的孤儿子进程执行隔离熔断（`QUARANTINED_ORPHAN_ALIVE`；前任存活但无存活子进程时改为退回队列），对写工作区的变更类任务禁止盲目自动重排（`MARKED_FAILED_MUTATION_UNSAFE`），仅对确认已终止的只读审查任务执行退回队列重排（`RELEASED_TO_QUEUE`），严格遵循 CK-05 防 PID 复用误杀。

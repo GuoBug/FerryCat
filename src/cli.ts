@@ -76,16 +76,18 @@ Examples:
   ferrycat-cli worker --agent workbuddy --mode=exec --once --exec-file ./scripts/review.js`;
 
 const SUBCOMMAND_HELP: Record<string, string> = {
-  dispatch: `Usage: ferrycat-cli dispatch [--agent <requester>] [--file <path|->] ['{...}']
+  dispatch: `Usage: ferrycat-cli dispatch [--agent <requester>] [--patch-file <path>] [--file <path|->] ['{...}']
 
 Dispatches a new contract and computes full-file SHA-256 fingerprints for all pointer files.
 
 Options:
-  --agent <id>        Requester agent identifier (overrides requester_agent in payload)
-  --file <path | ->   JSON payload file path, or "-" to read from stdin
+  --agent <id>          Requester agent identifier (overrides requester_agent in payload)
+  --patch-file <path>   Optional unified git diff file path to attach as self-contained git_patch (FC-202)
+  --file <path | ->     JSON payload file path, or "-" to read from stdin
 
 Examples:
   ferrycat-cli dispatch --file dispatch.json
+  ferrycat-cli dispatch --file dispatch.json --patch-file changes.patch
   cat dispatch.json | ferrycat-cli dispatch --agent antigravity -`,
 
   poll: `Usage: ferrycat-cli poll [--agent <worker_id>]
@@ -205,7 +207,7 @@ Examples:
   ferrycat-cli worker --agent workbuddy --mode=claim
   ferrycat-cli worker --agent workbuddy --mode=exec --once --exec-file ./worker-handler.js`,
 
-  daemon: `Usage: ferrycat-cli daemon [--config <path>] [--agent <id>] [--once] [--lease-ttl <sec>] [--interval <ms>]
+  daemon: `Usage: ferrycat-cli daemon [--config <path>] [--agent <id>] [--once] [--status] [--lease-ttl <sec>] [--interval <ms>]
 
 Runs the FerryCat production daemon (ADR-0005). Coordinates background workers using short-transaction
 CAS leases on the daemon_locks table and executes declarative scripts defined in ferrycat.config.json.
@@ -214,13 +216,16 @@ Options:
   --config <path>           Path to ferrycat.config.json (defaults to ./ferrycat.config.json or ~/.ferrycat/config.json)
   --agent <id>              Optional target agent filter (overrides config defaults)
   --once                    Run a single dispatch cycle and exit
+  --status                  Print lease ownership and write-ahead journal health (journal_degraded,
+                            last_journal_error, journal_path, entries) as JSON, then exit. Read-only.
   --lease-ttl <sec>         Daemon CAS lease TTL in seconds (default: 30)
   --interval <ms>           Poll interval in milliseconds (default: 1000)
   --no-notify               Disable console notices
 
 Examples:
   ferrycat-cli daemon --config ./ferrycat.config.json
-  ferrycat-cli daemon --agent workbuddy --once`,
+  ferrycat-cli daemon --agent workbuddy --once
+  ferrycat-cli daemon --status`,
 
   demo: `Usage: ferrycat-cli demo [--json] [--keep] [--no-color]
 
@@ -423,11 +428,26 @@ function parseArgs(argv: string[]): ParsedCliArgs {
     } else if (token === '--token' || token === '--claim-token') {
       flagOverrides.claim_token = requireFlagValue(token, rest[++i]);
     } else if (token === '--status') {
-      flagOverrides.status = requireFlagValue('--status', rest[++i]);
+      // Dual purpose: `inspect --status <STATUS>` filters by contract status, while
+      // `daemon --status` is a bare boolean that prints lease + journal health.
+      const next = rest[i + 1];
+      if (next !== undefined && !next.startsWith('-')) {
+        flagOverrides.status = next;
+        i += 1;
+      } else {
+        flagOverrides.status = true;
+      }
     } else if (token === '--reason') {
       flagOverrides.reason = requireFlagValue('--reason', rest[++i]);
     } else if (token === '--summary') {
       flagOverrides.result_summary = requireFlagValue('--summary', rest[++i]);
+    } else if (token === '--patch-file') {
+      const patchPath = requireFlagValue('--patch-file', rest[++i]);
+      const resolvedPatch = path.resolve(expandTilde(patchPath));
+      if (!fs.existsSync(resolvedPatch)) {
+        throw new Error(`Patch file not found: "${patchPath}" (resolved: "${resolvedPatch}").`);
+      }
+      flagOverrides.git_patch = fs.readFileSync(resolvedPatch, 'utf8');
     } else if (token === '--limit') {
       const rawLimit = requireFlagValue('--limit', rest[++i]);
       const num = Number(rawLimit);
@@ -625,7 +645,7 @@ async function runWorkerLoop(
   while (running) {
     try {
       if (hasExec) {
-        const pollRes = engine.pollNextTask({ agent_id: resolvedAgent });
+        const pollRes = await engine.pollNextTask({ agent_id: resolvedAgent });
         if (pollRes.has_task && pollRes.contract) {
           console.log(
             JSON.stringify({
@@ -895,7 +915,7 @@ async function main(): Promise<void> {
       }
       case 'poll': {
         engine = new FerryCatEngine();
-        output = engine.pollNextTask(PollNextTaskSchema.parse(data));
+        output = await engine.pollNextTask(PollNextTaskSchema.parse(data));
         console.log(JSON.stringify(output, null, 2));
         break;
       }
@@ -1002,7 +1022,7 @@ async function main(): Promise<void> {
         engine = new FerryCatEngine();
 
         if (effectiveOnce) {
-          const pollRes = engine.pollNextTask({ agent_id: resolvedAgent });
+          const pollRes = await engine.pollNextTask({ agent_id: resolvedAgent });
           if (!pollRes.has_task || !pollRes.contract) {
             // Preserve engine's specific poll status/message/stale_error (fixes G8)
             output = {
@@ -1049,6 +1069,7 @@ async function main(): Promise<void> {
         const configPath = data.config as string | undefined;
         const targetAgent = data.target_agent as string | undefined ?? data.agent_id as string | undefined;
         const once = Boolean(data.once);
+        const wantStatus = Boolean(data.status);
         const leaseTtl = data.lease_ttl_sec ? Number(data.lease_ttl_sec) : undefined;
         const intervalMs = data.interval_ms ? Number(data.interval_ms) : undefined;
         const notify = data.notify !== false;
@@ -1061,11 +1082,17 @@ async function main(): Promise<void> {
           notify,
         });
 
-        if (once) {
+        if (wantStatus) {
+          // R7: read-only inspection of lease ownership + write-ahead journal health.
+          const status = daemon.getStatus();
+          daemon.engine.close();
+          console.log(JSON.stringify({ ok: true, daemon_status: status }, null, 2));
+        } else if (once) {
           const res = await daemon.pollAndDispatchOnce();
+          const status = daemon.getStatus();
           daemon.releaseLease();
           daemon.engine.close();
-          output = { ok: true, daemon_once: res };
+          output = { ok: true, daemon_once: res, journal_degraded: status.journal_degraded };
           console.log(JSON.stringify(output, null, 2));
         } else {
           await daemon.start();

@@ -139,7 +139,7 @@ async function test2_FingerprintStalenessHeadMiddleTail(): Promise<void> {
     assert.equal(Buffer.byteLength(headMutated), Buffer.byteLength(originalContent));
     fs.writeFileSync(filePath, headMutated, 'utf8');
 
-    const pollHead = engine.pollNextTask({ agent_id: 'workbuddy' });
+    const pollHead = await engine.pollNextTask({ agent_id: 'workbuddy' });
     assert.equal(pollHead.has_task, false);
     assert.equal(pollHead.status, 'POINTER_STALE');
     assert.equal(pollHead.stale_error?.reason, 'CONTENT_CHANGED');
@@ -160,7 +160,7 @@ async function test2_FingerprintStalenessHeadMiddleTail(): Promise<void> {
     assert.equal(Buffer.byteLength(midMutated), Buffer.byteLength(originalContent));
     fs.writeFileSync(filePath, midMutated, 'utf8');
 
-    const pollMid = engine.pollNextTask({ agent_id: 'workbuddy' });
+    const pollMid = await engine.pollNextTask({ agent_id: 'workbuddy' });
     assert.equal(pollMid.has_task, false);
     assert.equal(pollMid.status, 'POINTER_STALE');
     assert.equal(pollMid.stale_error?.reason, 'CONTENT_CHANGED');
@@ -181,7 +181,7 @@ async function test2_FingerprintStalenessHeadMiddleTail(): Promise<void> {
     assert.equal(Buffer.byteLength(tailMutated), Buffer.byteLength(originalContent));
     fs.writeFileSync(filePath, tailMutated, 'utf8');
 
-    const pollTail = engine.pollNextTask({ agent_id: 'workbuddy' });
+    const pollTail = await engine.pollNextTask({ agent_id: 'workbuddy' });
     assert.equal(pollTail.has_task, false);
     assert.equal(pollTail.status, 'POINTER_STALE');
     assert.equal(pollTail.stale_error?.reason, 'CONTENT_CHANGED');
@@ -199,7 +199,7 @@ async function test2_FingerprintStalenessHeadMiddleTail(): Promise<void> {
       pointers: [{ path: 'module.ts' }],
     });
     fs.writeFileSync(filePath, originalContent + '\n// extra line\n', 'utf8');
-    const pollSize = engine.pollNextTask({ agent_id: 'workbuddy' });
+    const pollSize = await engine.pollNextTask({ agent_id: 'workbuddy' });
     assert.equal(pollSize.status, 'POINTER_STALE');
     assert.equal(pollSize.stale_error?.reason, 'SIZE_MISMATCH');
     console.log('  PASS [2D - Size Change]: Byte size change caught immediately as SIZE_MISMATCH.');
@@ -238,7 +238,7 @@ async function test3_SchemaValidationRetryAndCircuitBreak(): Promise<void> {
       contract_schema: schema,
     });
 
-    const claimed = engine.pollNextTask({ agent_id: 'workbuddy' });
+    const claimed = await engine.pollNextTask({ agent_id: 'workbuddy' });
     assert.equal(claimed.has_task, true);
     assert.equal(claimed.status, 'CLAIMED');
     const claimToken = claimed.contract?.claim_token;
@@ -370,7 +370,7 @@ async function test5_DualStageTtlAndHappyPath(): Promise<void> {
 
     // Claim at t0 + 1790s (10 seconds before queue_ttl_sec expires!)
     const tClaim = t0 + 1790 * 1000;
-    const claimed = engine.pollNextTask({ agent_id: 'workbuddy' }, tClaim);
+    const claimed = await engine.pollNextTask({ agent_id: 'workbuddy' }, tClaim);
     assert.equal(claimed.has_task, true);
     assert.equal(claimed.status, 'CLAIMED');
     const claimToken = claimed.contract?.claim_token;
@@ -408,7 +408,7 @@ async function test5_DualStageTtlAndHappyPath(): Promise<void> {
       },
       tFulfill
     );
-    const cToctou = engine.pollNextTask({ agent_id: 'workbuddy' }, tFulfill + 1000);
+    const cToctou = await engine.pollNextTask({ agent_id: 'workbuddy' }, tFulfill + 1000);
     assert.equal(cToctou.has_task, true);
     const toctouToken = cToctou.contract?.claim_token;
     assert.ok(toctouToken, 'cToctou must issue claim_token');
@@ -651,7 +651,7 @@ async function test8_TrustBoundaryAndQueueUnblocking(): Promise<void> {
       pointers: [{ path: 'auth-target.ts' }],
     });
 
-    const pollLegit = engine.pollNextTask({ agent_id: 'agent-legit' });
+    const pollLegit = await engine.pollNextTask({ agent_id: 'agent-legit' });
     assert.strictEqual(pollLegit.has_task, true);
     assert.strictEqual(pollLegit.status, 'CLAIMED');
 
@@ -716,7 +716,7 @@ async function test8_TrustBoundaryAndQueueUnblocking(): Promise<void> {
     fs.writeFileSync(file1, 'const q1 = "file 1 TAMPERED";\n', 'utf8');
 
     // Poll next task: c1 is stale, but worker must NOT get has_task: false! It must skip c1 and claim c2!
-    const pollQueue = engine.pollNextTask({ agent_id: 'queue-worker' });
+    const pollQueue = await engine.pollNextTask({ agent_id: 'queue-worker' });
     assert.strictEqual(pollQueue.has_task, true, 'pollNextTask must continue to next valid candidate');
     assert.strictEqual(pollQueue.status, 'CLAIMED');
     assert.strictEqual(pollQueue.contract?.contract_id, c2.contract_id);
@@ -838,7 +838,7 @@ async function test8_TrustBoundaryAndQueueUnblocking(): Promise<void> {
     }
 
     // Worker polls once: must slide past all 7 stale contracts and claim #8
-    const pollResult = engine.pollNextTask({ agent_id: 'page-worker' });
+    const pollResult = await engine.pollNextTask({ agent_id: 'page-worker' });
     assert.strictEqual(pollResult.has_task, true, 'pollNextTask must paginate through all stale contracts');
     assert.strictEqual(pollResult.status, 'CLAIMED');
     assert.strictEqual(pollResult.contract?.contract_id, validContract.contract_id);
@@ -875,18 +875,18 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
     };
     for (const [taskType, ttl] of Object.entries(expectedTtl)) {
       engine.dispatchContract({ ...base, task_type: taskType as any, target_agent: `ttl-${taskType}` }, t0);
-      const polled = engine.pollNextTask({ agent_id: `ttl-${taskType}` }, t0 + S);
+      const polled = await engine.pollNextTask({ agent_id: `ttl-${taskType}` }, t0 + S);
       assert.strictEqual(polled.contract?.exec_ttl_sec, ttl, `${taskType} default exec_ttl_sec`);
     }
     engine.dispatchContract({ ...base, task_type: 'code_review', target_agent: 'ttl-override', exec_ttl_sec: 42 }, t0);
-    assert.strictEqual(engine.pollNextTask({ agent_id: 'ttl-override' }, t0 + S).contract?.exec_ttl_sec, 42);
+    assert.strictEqual((await engine.pollNextTask({ agent_id: 'ttl-override' }, t0 + S)).contract?.exec_ttl_sec, 42);
     console.log('  PASS [9A - Tiered TTL]: review/audit=1800s, implementation/test=300s, explicit exec_ttl_sec overrides.');
 
     // 9B: release_contract preserves contract-level retry_count, re-queues at tail, enforces holder + release cap
     const schema = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' } } };
     const relA = engine.dispatchContract({ ...base, target_agent: 'rel', title: 'A', contract_schema: schema }, t0);
     const relB = engine.dispatchContract({ ...base, target_agent: 'rel', title: 'B' }, t0 + 1);
-    const pollRelA = engine.pollNextTask({ agent_id: 'rel' }, t0 + S);
+    const pollRelA = await engine.pollNextTask({ agent_id: 'rel' }, t0 + S);
     assert.strictEqual(pollRelA.contract?.contract_id, relA.contract_id);
     const tokenRelA = pollRelA.contract?.claim_token;
 
@@ -918,8 +918,8 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
     );
 
     // Released contract goes to the tail: B (older queue position) is claimed first
-    assert.strictEqual(engine.pollNextTask({ agent_id: 'rel' }, t0 + 5 * S).contract?.contract_id, relB.contract_id);
-    const pollRelA2 = engine.pollNextTask({ agent_id: 'rel' }, t0 + 6 * S);
+    assert.strictEqual((await engine.pollNextTask({ agent_id: 'rel' }, t0 + 5 * S)).contract?.contract_id, relB.contract_id);
+    const pollRelA2 = await engine.pollNextTask({ agent_id: 'rel' }, t0 + 6 * S);
     assert.strictEqual(pollRelA2.contract?.contract_id, relA.contract_id);
     const tokenRelA2 = pollRelA2.contract?.claim_token;
 
@@ -936,7 +936,7 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
     let currToken = tokenRelA2;
     for (let n = 2; n <= 3; n++) {
       assert.strictEqual(engine.releaseContract({ contract_id: relA.contract_id, agent_id: 'rel', claim_token: currToken }, tRel).release_count, n);
-      const repoll = engine.pollNextTask({ agent_id: 'rel' }, tRel + S);
+      const repoll = await engine.pollNextTask({ agent_id: 'rel' }, tRel + S);
       assert.strictEqual(repoll.contract?.contract_id, relA.contract_id);
       currToken = repoll.contract?.claim_token;
       tRel += 2 * S;
@@ -949,15 +949,15 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
 
     // Fresh queue window on release: original queue TTL (60s) passed, contract must not be swept
     const relC = engine.dispatchContract({ ...base, target_agent: 'rel-window', queue_ttl_sec: 60 }, t0);
-    const pRelC = engine.pollNextTask({ agent_id: 'rel-window' }, t0 + 50 * S);
+    const pRelC = await engine.pollNextTask({ agent_id: 'rel-window' }, t0 + 50 * S);
     engine.releaseContract({ contract_id: relC.contract_id, agent_id: 'rel-window', claim_token: pRelC.contract?.claim_token }, t0 + 70 * S);
-    const reclaimed = engine.pollNextTask({ agent_id: 'rel-window' }, t0 + 100 * S);
+    const reclaimed = await engine.pollNextTask({ agent_id: 'rel-window' }, t0 + 100 * S);
     assert.strictEqual(reclaimed.contract?.contract_id, relC.contract_id, 'released contract needs a fresh queue window');
     console.log('  PASS [9B - Fresh Queue Window]: contract released after its original queue TTL was re-claimable.');
 
     // 9B-2: release rejected once beyond absolute lifetime cap
     const relCap = engine.dispatchContract({ ...base, target_agent: 'rel-cap', queue_ttl_sec: 60 }, t0);
-    const pRelCap = engine.pollNextTask({ agent_id: 'rel-cap' }, t0 + 10 * S);
+    const pRelCap = await engine.pollNextTask({ agent_id: 'rel-cap' }, t0 + 10 * S);
     // Lifetime cap is created_at + 4 * 60s = 240s
     const relBeyondCap = engine.releaseContract({ contract_id: relCap.contract_id, agent_id: 'rel-cap', claim_token: pRelCap.contract?.claim_token }, t0 + 241 * S);
     assert.strictEqual(relBeyondCap.ok, false);
@@ -967,7 +967,7 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
 
     // 9C: extend_ttl restarts the window, capped at 5, must be called inside the window
     const ext = engine.dispatchContract({ ...base, target_agent: 'ext', exec_ttl_sec: 300 }, t0);
-    const pExt = engine.pollNextTask({ agent_id: 'ext' }, t0);
+    const pExt = await engine.pollNextTask({ agent_id: 'ext' }, t0);
     const tokenExt = pExt.contract?.claim_token;
     assert.throws(
       () => engine.extendTtl({ contract_id: ext.contract_id, agent_id: 'imposter', claim_token: tokenExt }, t0 + S),
@@ -996,7 +996,7 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
     // For queue_ttl_sec = 60, exec_ttl_sec = 300: lifetime deadline is t0 + 240s.
     // At t0 + 10s: claimed. At t0 + 20s: renewing would produce expires_at = 20s + 300s = 320s > 240s, so it must be refused!
     const capC = engine.dispatchContract({ ...base, target_agent: 'ext-cap', queue_ttl_sec: 60, exec_ttl_sec: 300 }, t0);
-    const pCapC = engine.pollNextTask({ agent_id: 'ext-cap' }, t0 + 10 * S);
+    const pCapC = await engine.pollNextTask({ agent_id: 'ext-cap' }, t0 + 10 * S);
     const proposedExceedsCap = engine.extendTtl({ contract_id: capC.contract_id, agent_id: 'ext-cap', claim_token: pCapC.contract?.claim_token }, t0 + 20 * S);
     assert.strictEqual(proposedExceedsCap.ok, false, 'renewal that would push window past lifetime deadline must be refused');
     assert.match(proposedExceedsCap.message, /exceeding the absolute lifetime cap/);
@@ -1004,7 +1004,7 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
     // Now test with larger queue_ttl_sec = 600, exec_ttl_sec = 100: deadline is t0 + 2400s.
     // At t0 + 50s: renewing pushes to 50s + 100s = 150s <= 2400s, so it succeeds.
     const capOk = engine.dispatchContract({ ...base, target_agent: 'ext-ok', queue_ttl_sec: 600, exec_ttl_sec: 100 }, t0);
-    const pCapOk = engine.pollNextTask({ agent_id: 'ext-ok' }, t0 + 10 * S);
+    const pCapOk = await engine.pollNextTask({ agent_id: 'ext-ok' }, t0 + 10 * S);
     const extendWithinLifetime = engine.extendTtl({ contract_id: capOk.contract_id, agent_id: 'ext-ok', claim_token: pCapOk.contract?.claim_token }, t0 + 50 * S);
     assert.strictEqual(extendWithinLifetime.ok, true);
     assert.ok(extendWithinLifetime.expires_at! <= t0 + 2400 * S, 'expires_at must be strictly within lifetime cap');
@@ -1013,7 +1013,7 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
 
     // 9D: fail_contract -> terminal FAILED with reason; late report -> TIMED_OUT with reason preserved
     const fl = engine.dispatchContract({ ...base, target_agent: 'fl', exec_ttl_sec: 300 }, t0);
-    const pFl = engine.pollNextTask({ agent_id: 'fl' }, t0);
+    const pFl = await engine.pollNextTask({ agent_id: 'fl' }, t0);
     const tokenFl = pFl.contract?.claim_token;
     assert.throws(
       () => engine.failContract({ contract_id: fl.contract_id, agent_id: 'imposter', claim_token: tokenFl, reason: 'x' }, t0 + S),
@@ -1039,7 +1039,7 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
     );
 
     const flLate = engine.dispatchContract({ ...base, target_agent: 'fl-late', exec_ttl_sec: 300 }, t0);
-    const pFlLate = engine.pollNextTask({ agent_id: 'fl-late' }, t0);
+    const pFlLate = await engine.pollNextTask({ agent_id: 'fl-late' }, t0);
     const late = engine.failContract({ contract_id: flLate.contract_id, agent_id: 'fl-late', claim_token: pFlLate.contract?.claim_token, reason: 'gave up' }, t0 + 400 * S);
     assert.strictEqual(late.status, 'TIMED_OUT');
     assert.strictEqual(
@@ -1050,7 +1050,7 @@ async function test9_LifecycleReleaseExtendFail(): Promise<void> {
 
     // 9E: RETRY_NEEDED renews the execution window
     const rn = engine.dispatchContract({ ...base, target_agent: 'rn', exec_ttl_sec: 300, contract_schema: schema }, t0);
-    const pRn = engine.pollNextTask({ agent_id: 'rn' }, t0);
+    const pRn = await engine.pollNextTask({ agent_id: 'rn' }, t0);
     const tokenRn = pRn.contract?.claim_token;
     const rnRetry = engine.fulfillContract(
       { contract_id: rn.contract_id, agent_id: 'rn', claim_token: tokenRn, result_summary: 'bad', structured_output: {} },
@@ -1097,7 +1097,7 @@ async function test10_LegacySchemaMigrationAndCliLifecycle(): Promise<void> {
     raw.close();
 
     const migrated = new FerryCatEngine({ dbPath });
-    const legacyPoll = migrated.pollNextTask({ agent_id: 'legacy-worker' });
+    const legacyPoll = await migrated.pollNextTask({ agent_id: 'legacy-worker' });
     assert.strictEqual(legacyPoll.contract?.contract_id, legacy.contract_id, 'legacy row (queued_at NULL) must be claimable');
     const legacyExt = migrated.extendTtl({
       contract_id: legacy.contract_id,
@@ -1123,7 +1123,7 @@ async function test10_LegacySchemaMigrationAndCliLifecycle(): Promise<void> {
 
     const engine = new FerryCatEngine({ dbPath });
     const cliC = engine.dispatchContract({ ...base, target_agent: 'cli-life' });
-    const pLife1 = engine.pollNextTask({ agent_id: 'cli-life' });
+    const pLife1 = await engine.pollNextTask({ agent_id: 'cli-life' });
     const tokenLife1 = pLife1.contract!.claim_token!;
 
     const resExtend = await execCli(['extend', '--agent', 'cli-life', '--id', cliC.contract_id, '--token', tokenLife1]);
@@ -1134,7 +1134,7 @@ async function test10_LegacySchemaMigrationAndCliLifecycle(): Promise<void> {
     assert.strictEqual(resRelease.code, 0, resRelease.stderr);
     assert.strictEqual(JSON.parse(resRelease.stdout).status, 'SUBMITTED');
 
-    const pLife2 = engine.pollNextTask({ agent_id: 'cli-life' });
+    const pLife2 = await engine.pollNextTask({ agent_id: 'cli-life' });
     const tokenLife2 = pLife2.contract!.claim_token!;
     const resFailNoReason = await execCli(['fail', '--agent', 'cli-life', '--id', cliC.contract_id, '--token', tokenLife2]);
     assert.notStrictEqual(resFailNoReason.code, 0, 'fail without --reason must be rejected');
@@ -1186,7 +1186,7 @@ async function test11_PhaseBCliErgonomicsAndToctouBuffer(): Promise<void> {
       pointers: [{ path: 'file-a.ts' }, { path: 'file-b.ts' }],
     });
 
-    const pRecover = engine.pollNextTask({ agent_id: 'workbuddy' }, 1000);
+    const pRecover = await engine.pollNextTask({ agent_id: 'workbuddy' }, 1000);
     assert.strictEqual(pRecover.has_task, true);
     const tokenRecover = pRecover.contract?.claim_token;
 
@@ -1270,9 +1270,9 @@ async function test11_PhaseBCliErgonomicsAndToctouBuffer(): Promise<void> {
       workspace_root: dir,
       pointers: [{ path: 'file-a.ts' }],
     });
-    const pSalv1 = engine.pollNextTask({ agent_id: 'workbuddy' });
+    const pSalv1 = await engine.pollNextTask({ agent_id: 'workbuddy' });
     engine.releaseContract({ contract_id: cSalvage.contract_id, agent_id: 'workbuddy', claim_token: pSalv1.contract?.claim_token, reason: 'first release' });
-    const pSalv2 = engine.pollNextTask({ agent_id: 'workbuddy' });
+    const pSalv2 = await engine.pollNextTask({ agent_id: 'workbuddy' });
     engine.releaseContract({ contract_id: cSalvage.contract_id, agent_id: 'workbuddy', claim_token: pSalv2.contract?.claim_token, reason: 'second release' });
 
     const afterReleases = engine.inspectMeshState({ contract_id: cSalvage.contract_id }).contracts[0];
@@ -1282,7 +1282,7 @@ async function test11_PhaseBCliErgonomicsAndToctouBuffer(): Promise<void> {
       `Expected preserved release history, got: ${afterReleases.error_reason}`
     );
 
-    const pSalv3 = engine.pollNextTask({ agent_id: 'workbuddy' });
+    const pSalv3 = await engine.pollNextTask({ agent_id: 'workbuddy' });
     const tokenSalv3 = pSalv3.contract?.claim_token;
     fs.writeFileSync(fileA, 'export const a = 777; // dirty again\n', 'utf8');
     const s1 = engine.fulfillContract({
@@ -1545,7 +1545,7 @@ async function test12_Phase031_LeaseTokensAndPayloadLimits(): Promise<void> {
       pointers: [{ path: 'code.ts' }],
     });
 
-    const p1 = engine.pollNextTask({ agent_id: 'multi-worker' });
+    const p1 = await engine.pollNextTask({ agent_id: 'multi-worker' });
     assert.strictEqual(p1.has_task, true);
     assert.strictEqual(p1.status, 'CLAIMED');
     const token1 = p1.contract?.claim_token;
@@ -1604,7 +1604,7 @@ async function test12_Phase031_LeaseTokensAndPayloadLimits(): Promise<void> {
       pointers: [{ path: 'code.ts' }],
     });
 
-    const pRecycle1 = engine.pollNextTask({ agent_id: 'recycle-worker' });
+    const pRecycle1 = await engine.pollNextTask({ agent_id: 'recycle-worker' });
     const tokenRecycle1 = pRecycle1.contract?.claim_token;
     assert.ok(tokenRecycle1);
 
@@ -1619,7 +1619,7 @@ async function test12_Phase031_LeaseTokensAndPayloadLimits(): Promise<void> {
     assert.strictEqual(relRes.status, 'SUBMITTED');
 
     // Re-claim gets a fresh, distinct token
-    const pRecycle2 = engine.pollNextTask({ agent_id: 'recycle-worker' });
+    const pRecycle2 = await engine.pollNextTask({ agent_id: 'recycle-worker' });
     const tokenRecycle2 = pRecycle2.contract?.claim_token;
     assert.ok(tokenRecycle2);
     assert.notStrictEqual(tokenRecycle1, tokenRecycle2, 'New claim must issue a fresh distinct token');
@@ -1828,7 +1828,7 @@ async function test13_Step0SupervisorHardening(): Promise<void> {
       exec_ttl_sec: 1, // Short 1-second TTL to test fast renewals
     });
 
-    const claimedKeepAlive = engine.pollNextTask({ agent_id: 'supervisor-worker' });
+    const claimedKeepAlive = await engine.pollNextTask({ agent_id: 'supervisor-worker' });
     assert.ok(claimedKeepAlive.contract);
 
     // Create a slow script that takes 1.8 seconds (exceeding 1.0s exec_ttl_sec)
@@ -1882,7 +1882,7 @@ async function test13_Step0SupervisorHardening(): Promise<void> {
       pointers: [{ path: 'code.ts' }],
       exec_ttl_sec: 10,
     });
-    const claimedLazy = engine.pollNextTask({ agent_id: 'supervisor-worker' });
+    const claimedLazy = await engine.pollNextTask({ agent_id: 'supervisor-worker' });
     const fastScript = path.join(dir, 'fast_worker.cjs');
     fs.writeFileSync(
       fastScript,
@@ -1974,7 +1974,7 @@ async function test13_Step0SupervisorHardening(): Promise<void> {
       exec_ttl_sec: 1, // 1s
     });
 
-    const claimedSalvage = engine.pollNextTask({ agent_id: 'supervisor-worker' });
+    const claimedSalvage = await engine.pollNextTask({ agent_id: 'supervisor-worker' });
     assert.ok(claimedSalvage.contract);
 
     // Script that prints important progress logs then hangs
@@ -2033,7 +2033,7 @@ async function test13_Step0SupervisorHardening(): Promise<void> {
       pointers: [{ path: 'code.ts' }],
       exec_ttl_sec: 1,
     });
-    const claimedCollision = engine.pollNextTask({ agent_id: 'supervisor-worker' });
+    const claimedCollision = await engine.pollNextTask({ agent_id: 'supervisor-worker' });
     assert.ok(claimedCollision.contract);
     const tokenCollision = claimedCollision.contract.claim_token;
     assert.ok(tokenCollision);
@@ -2093,7 +2093,7 @@ async function test13_Step0SupervisorHardening(): Promise<void> {
       workspace_root: dir,
       pointers: [{ path: 'code.ts' }],
     });
-    const claimedDirect = engine.pollNextTask({ agent_id: 'supervisor-worker' });
+    const claimedDirect = await engine.pollNextTask({ agent_id: 'supervisor-worker' });
     assert.ok(claimedDirect.contract);
     const tokenDirect = claimedDirect.contract.claim_token;
     assert.ok(tokenDirect);
@@ -2708,7 +2708,7 @@ async function test16_DesktopNotificationAndWebhook(): Promise<void> {
         pointers: [{ path: 'feature.ts' }],
       });
 
-      const polledMut = mutEngine.pollNextTask({ agent_id: 'workbuddy' });
+      const polledMut = await mutEngine.pollNextTask({ agent_id: 'workbuddy' });
       assert.strictEqual(polledMut.has_task, true);
       assert.strictEqual(polledMut.status, 'CLAIMED');
       const mutClaimToken = polledMut.contract?.claim_token;
@@ -2789,7 +2789,7 @@ async function test16_DesktopNotificationAndWebhook(): Promise<void> {
         workspace_root: mutDir,
         pointers: [{ path: 'feature.ts' }],
       });
-      const roPolled = mutEngine.pollNextTask({ agent_id: 'workbuddy' });
+      const roPolled = await mutEngine.pollNextTask({ agent_id: 'workbuddy' });
       fs.writeFileSync(targetFile, postContent + '// illegal review edit\n', 'utf8');
       const roFulfill = mutEngine.fulfillContract({
         contract_id: roDispatch.contract_id,
@@ -2818,7 +2818,7 @@ async function test16_DesktopNotificationAndWebhook(): Promise<void> {
         pointers: [{ path: 'feature.ts' }],
       });
       // Skip the released roDispatch by polling until secDispatch is claimed
-      let secPolled = mutEngine.pollNextTask({ agent_id: 'workbuddy' });
+      let secPolled = await mutEngine.pollNextTask({ agent_id: 'workbuddy' });
       if (secPolled.contract?.contract_id === roDispatch.contract_id) {
         mutEngine.failContract({
           contract_id: roDispatch.contract_id,
@@ -2826,7 +2826,7 @@ async function test16_DesktopNotificationAndWebhook(): Promise<void> {
           claim_token: secPolled.contract.claim_token,
           reason: 'skip roDispatch',
         });
-        secPolled = mutEngine.pollNextTask({ agent_id: 'workbuddy' });
+        secPolled = await mutEngine.pollNextTask({ agent_id: 'workbuddy' });
       }
       assert.strictEqual(secPolled.contract?.contract_id, secDispatch.contract_id);
 
@@ -2863,7 +2863,7 @@ async function test16_DesktopNotificationAndWebhook(): Promise<void> {
         workspace_root: mutDir,
         pointers: [{ path: 'feature.ts' }],
       });
-      const delPolled = mutEngine.pollNextTask({ agent_id: 'workbuddy' });
+      const delPolled = await mutEngine.pollNextTask({ agent_id: 'workbuddy' });
       const phantomFulfill = mutEngine.fulfillContract({
         contract_id: delDispatch.contract_id,
         agent_id: 'workbuddy',
@@ -2972,6 +2972,858 @@ async function test17_StaticAnalysisGate(): Promise<void> {
   }
 }
 
+async function test18_AsyncNonBlockingTransientRetry(): Promise<void> {
+  console.log('\n[Test 18] FC-203: Async Non-Blocking Transient Retry & Event-Loop Liveness');
+  const { dir, dbPath, cleanup } = createTempWorkspace('fc203-async-retry');
+  // Use 120ms retry window so we can schedule timers at 25ms and 50ms inside the retry delay
+  const engine = new FerryCatEngine({ dbPath, defaultAgentName: 'antigravity', fingerprintRetryDelayMs: 120 });
+
+  try {
+    // 18A: Event loop remains responsive during fingerprint retry window
+    const fileA = path.join(dir, 'buffer.ts');
+    const cleanContent = 'export const flushed = true;\n';
+    fs.writeFileSync(fileA, cleanContent, 'utf8');
+
+    const c1 = engine.dispatchContract({
+      target_agent: 'workbuddy',
+      task_type: 'code_review',
+      title: 'Event loop non-blocking test',
+      context_summary: 'Verify timers fire during transient retry delay',
+      workspace_root: dir,
+      pointers: [{ path: 'buffer.ts' }],
+    });
+
+    // Dirty the file so the first read in pollNextTask triggers the 120ms retry sleep
+    fs.writeFileSync(fileA, 'export const flushed = false; // mid-write\n', 'utf8');
+
+    const tickTimestamps: number[] = [];
+    const retryWindowStartMs = Date.now();
+    const ticker = setInterval(() => {
+      tickTimestamps.push(Date.now());
+    }, 20);
+
+    const pollStale = await engine.pollNextTask({ agent_id: 'workbuddy' });
+    const retryWindowEndMs = Date.now();
+    clearInterval(ticker);
+
+    assert.strictEqual(pollStale.status, 'POINTER_STALE');
+    assert.strictEqual(pollStale.stale_error?.contract_id, c1.contract_id);
+    const ticksInsideWindow = tickTimestamps.filter(
+      (ts) => ts >= retryWindowStartMs && ts <= retryWindowEndMs
+    );
+    assert.ok(
+      ticksInsideWindow.length >= 1,
+      `Event loop must NOT be blocked by Atomics.wait during retry window; expected >= 1 timer tick inside [${retryWindowStartMs}, ${retryWindowEndMs}], got ${ticksInsideWindow.length}`
+    );
+    console.log(
+      `  PASS [18A - Non-Blocking Event Loop]: ${ticksInsideWindow.length} event-loop timer tick(s) fired inside [${retryWindowStartMs}, ${retryWindowEndMs}] during 120ms retry window.`
+    );
+
+    // 18B: Transient IDE buffer flush healing during the async retry window
+    fs.writeFileSync(fileA, cleanContent, 'utf8');
+    const c2 = engine.dispatchContract({
+      target_agent: 'workbuddy',
+      task_type: 'code_review',
+      title: 'Transient flush healing test',
+      context_summary: 'File heals on disk 30ms into the 120ms retry window',
+      workspace_root: dir,
+      pointers: [{ path: 'buffer.ts' }],
+    });
+
+    // Simulate transient half-written file at the start of pollNextTask
+    fs.writeFileSync(fileA, 'export const flushed = false; // transient half-write\n', 'utf8');
+
+    // Schedule an async flush 30ms later (impossible to run if main thread were blocked by Atomics.wait!)
+    setTimeout(() => {
+      fs.writeFileSync(fileA, cleanContent, 'utf8');
+    }, 30);
+
+    const pollHealed = await engine.pollNextTask({ agent_id: 'workbuddy' });
+    assert.strictEqual(pollHealed.has_task, true, 'Contract must be claimed after transient flush heals within retry window');
+    assert.strictEqual(pollHealed.status, 'CLAIMED');
+    assert.strictEqual(pollHealed.contract?.contract_id, c2.contract_id);
+    console.log('  PASS [18B - Transient Flush Healing]: File healed asynchronously at 30ms during 120ms retry window and claimed as CLAIMED.');
+
+    // 18C: Source audit confirming zero Atomics.wait / SharedArrayBuffer in src/
+    const fpSrc = fs.readFileSync(path.resolve('src/fingerprint.ts'), 'utf8');
+    const engSrc = fs.readFileSync(path.resolve('src/engine.ts'), 'utf8');
+    assert.ok(!fpSrc.includes('Atomics.wait'), 'src/fingerprint.ts must not contain Atomics.wait');
+    assert.ok(!fpSrc.includes('SharedArrayBuffer'), 'src/fingerprint.ts must not contain SharedArrayBuffer');
+    assert.ok(!engSrc.includes('Atomics.wait'), 'src/engine.ts must not contain Atomics.wait');
+    console.log('  PASS [18C - Zero Sync-Sleep Debt]: Confirmed zero Atomics.wait / SharedArrayBuffer in production src/.');
+  } finally {
+    engine.close();
+    cleanup();
+  }
+}
+
+async function test19_SelfContainedGitPatchMode(): Promise<void> {
+  console.log('\n[Test 19] FC-202: Self-Contained Git Patch Mode & Cross-Branch Handoff');
+  const { dir, dbPath, cleanup } = createTempWorkspace('fc202-git-patch');
+  const engine = new FerryCatEngine({ dbPath, defaultAgentName: 'antigravity', fingerprintRetryDelayMs: 10 });
+
+  try {
+    // 19A: Cross-branch handoff where requester dispatches from feature branch with git_patch,
+    // and worker claims/verifies/fulfills while working tree is switched to main branch
+    const calcFile = path.join(dir, 'calc.ts');
+    const featureFile = path.join(dir, 'feature-x.ts');
+    const branchACalc = 'export const add = (a: number, b: number) => a + b;\nexport const mul = (a: number, b: number) => a * b;\n';
+    const branchAFeature = 'export const featureX = "enabled-on-branch-A";\n';
+    fs.writeFileSync(calcFile, branchACalc, 'utf8');
+    fs.writeFileSync(featureFile, branchAFeature, 'utf8');
+
+    const samplePatch = [
+      'diff --git a/calc.ts b/calc.ts',
+      'index 1111111..2222222 100644',
+      '--- a/calc.ts',
+      '+++ b/calc.ts',
+      '@@ -1 +1,2 @@',
+      ' export const add = (a: number, b: number) => a + b;',
+      '+export const mul = (a: number, b: number) => a * b;',
+      'diff --git a/feature-x.ts b/feature-x.ts',
+      'new file mode 100644',
+      '--- /dev/null',
+      '+++ b/feature-x.ts',
+      '@@ -0,0 +1 @@',
+      '+export const featureX = "enabled-on-branch-A";',
+      '',
+    ].join('\n');
+
+    const expectedPatchSha = crypto.createHash('sha256').update(Buffer.from(samplePatch, 'utf8')).digest('hex');
+
+    // Dispatch 1: Normal contract WITHOUT git_patch (control group)
+    const noPatchContract = engine.dispatchContract({
+      target_agent: 'workbuddy',
+      task_type: 'code_review',
+      title: 'Review without patch (will go POINTER_STALE on branch switch)',
+      context_summary: 'Control contract without git_patch',
+      workspace_root: dir,
+      pointers: [{ path: 'calc.ts' }, { path: 'feature-x.ts' }],
+    });
+
+    // Dispatch 2: Self-contained contract WITH git_patch
+    const patchContract = engine.dispatchContract({
+      target_agent: 'workbuddy',
+      task_type: 'code_review',
+      title: 'Cross-branch review with self-contained git_patch',
+      context_summary: 'Review feature-x diff even when local workspace is checked out on main',
+      workspace_root: dir,
+      pointers: [{ path: 'calc.ts' }, { path: 'feature-x.ts' }],
+      git_patch: samplePatch,
+    });
+
+    assert.strictEqual(patchContract.patch_sha256, expectedPatchSha);
+    assert.strictEqual(patchContract.patch_bytes, Buffer.byteLength(samplePatch, 'utf8'));
+
+    // Simulate switching local git branch to `main`:
+    // calc.ts reverts to 1-line version, and feature-x.ts does not exist on `main`!
+    fs.writeFileSync(calcFile, 'export const add = (a: number, b: number) => a + b;\n', 'utf8');
+    fs.unlinkSync(featureFile);
+
+    // Polling once must mark noPatchContract as POINTER_STALE, skip it, and claim patchContract in SELF_CONTAINED mode!
+    const pollRes = await engine.pollNextTask({ agent_id: 'workbuddy' });
+    assert.strictEqual(pollRes.has_task, true);
+    assert.strictEqual(pollRes.status, 'CLAIMED');
+    assert.strictEqual(pollRes.contract?.contract_id, patchContract.contract_id);
+    assert.strictEqual(pollRes.contract?.patch_mode, 'SELF_CONTAINED');
+    assert.strictEqual(pollRes.contract?.git_patch, samplePatch);
+    assert.strictEqual(pollRes.contract?.patch_sha256, expectedPatchSha);
+    assert.ok(
+      pollRes.contract?.workspace_warning && pollRes.contract.workspace_warning.includes('SELF_CONTAINED_PATCH_MODE'),
+      'SELF_CONTAINED poll must emit explicit workspace_warning'
+    );
+
+    const noPatchState = engine.inspectMeshState({ contract_id: noPatchContract.contract_id }).contracts[0];
+    assert.strictEqual(noPatchState.status, 'POINTER_STALE', 'Contract without git_patch must be marked POINTER_STALE on branch switch');
+
+    // Pre-flight verifyContract on the cross-branch contract must report valid=true & fulfillable=true
+    const verifyRes = engine.verifyContract({
+      contract_id: patchContract.contract_id,
+      agent_id: 'workbuddy',
+    });
+    assert.strictEqual(verifyRes.valid, true);
+    assert.strictEqual(verifyRes.fulfillable, true);
+    assert.strictEqual(verifyRes.dirty_files.length, 2, 'dirty_files still reports the 2 local branch differences for transparency');
+    assert.ok(verifyRes.message.includes('Self-contained git_patch baseline verified'));
+
+    // Fulfill the cross-branch contract: must succeed as COMPLETED without triggering TOCTOU rejection!
+    const fulfillRes = engine.fulfillContract({
+      contract_id: patchContract.contract_id,
+      agent_id: 'workbuddy',
+      claim_token: pollRes.contract?.claim_token,
+      result_summary: 'Cross-branch diff reviewed via self-contained git_patch. LGTM.',
+    });
+    assert.strictEqual(fulfillRes.ok, true);
+    assert.strictEqual(fulfillRes.status, 'COMPLETED');
+
+    const completedRow = engine.inspectMeshState({ contract_id: patchContract.contract_id }).contracts[0];
+    assert.strictEqual(completedRow.status, 'COMPLETED');
+    assert.strictEqual(completedRow.patch_sha256, expectedPatchSha);
+    assert.strictEqual(completedRow.patch_bytes, Buffer.byteLength(samplePatch, 'utf8'));
+    assert.strictEqual(completedRow.git_patch, undefined, 'inspectMeshState omits raw git_patch by default');
+    const completedWithPatch = engine.inspectMeshState({ contract_id: patchContract.contract_id, include_patch: true }).contracts[0];
+    assert.strictEqual(completedWithPatch.git_patch, samplePatch, 'inspectMeshState includes git_patch when include_patch=true');
+
+    const vSha = completedRow.verified_sha256 as Record<string, string>;
+    assert.strictEqual(vSha.__patch_mode__, 'SELF_CONTAINED');
+    assert.strictEqual(vSha.__git_patch_sha256__, expectedPatchSha);
+    assert.strictEqual(vSha.__verified_on_disk__, 'NO');
+    assert.strictEqual(vSha.__unverified_pointers__, 'calc.ts,feature-x.ts');
+    assert.strictEqual(vSha['calc.ts'], undefined, 'Unverified on-disk pointer calc.ts must NOT be recorded in verified_sha256');
+    assert.strictEqual(vSha['feature-x.ts'], undefined, 'Unverified missing pointer feature-x.ts must NOT be recorded in verified_sha256');
+    console.log('  PASS [19A - Cross-Branch Handoff]: Self-contained git_patch contract claimed with workspace_warning, verified, and COMPLETED with honest verified_sha256 metadata.');
+
+    // 19B: Patch Security Blacklist & Path Traversal Guard
+    assert.throws(
+      () =>
+        engine.dispatchContract({
+          target_agent: 'workbuddy',
+          task_type: 'code_review',
+          title: 'Malicious patch touching .env',
+          context_summary: 'Must be blocked by assertSafeGitPatch',
+          workspace_root: dir,
+          pointers: [{ path: 'calc.ts' }],
+          git_patch: 'diff --git a/.env.production b/.env.production\n--- a/.env.production\n+++ b/.env.production\n@@ -1 +1 @@\n+SECRET=123\n',
+        }),
+      /Git patch rejected by security blacklist/i,
+      'Patch headers touching .env must be rejected'
+    );
+
+    assert.throws(
+      () =>
+        engine.dispatchContract({
+          target_agent: 'workbuddy',
+          task_type: 'code_review',
+          title: 'Malicious patch with traversal',
+          context_summary: 'Must be blocked by assertSafeGitPatch',
+          workspace_root: dir,
+          pointers: [{ path: 'calc.ts' }],
+          git_patch: '--- a/../../etc/passwd\n+++ b/../../etc/passwd\n@@ -1 +1 @@\n+root:x:0:0\n',
+        }),
+      /escapes workspace boundary/i,
+      'Patch headers with ../ traversal must be rejected'
+    );
+
+    assert.throws(
+      () =>
+        engine.dispatchContract({
+          target_agent: 'workbuddy',
+          task_type: 'code_review',
+          title: 'Oversized patch > 512KB',
+          context_summary: 'Must be rejected by 512KB limit',
+          workspace_root: dir,
+          pointers: [{ path: 'calc.ts' }],
+          git_patch: 'a'.repeat(530 * 1024),
+        }),
+      /exceeds maximum allowed limit of 524288 bytes/i,
+      'Oversized git_patch > 512KB must be rejected'
+    );
+    console.log('  PASS [19B - Patch Security & Size Guards]: Sensitive diff headers (.env), path traversal (../), and >512KB patches rejected.');
+
+    // 19D: Negative Gate 1 & 2 — Non-diff prose string and patch not covering pointers MUST be rejected
+    assert.throws(
+      () =>
+        engine.dispatchContract({
+          target_agent: 'workbuddy',
+          task_type: 'code_review',
+          title: 'Junk prose string as git_patch',
+          context_summary: 'Must fail NOT_A_UNIFIED_DIFF',
+          workspace_root: dir,
+          pointers: [{ path: 'calc.ts' }],
+          git_patch: 'This is a 49-byte prose string without diff hdrs!',
+        }),
+      /NOT_A_UNIFIED_DIFF/i,
+      'Prose string without unified diff headers must be rejected with NOT_A_UNIFIED_DIFF'
+    );
+
+    assert.throws(
+      () =>
+        engine.dispatchContract({
+          target_agent: 'workbuddy',
+          task_type: 'code_review',
+          title: 'Patch touching only README.md while pointer is calc.ts',
+          context_summary: 'Must fail PATCH_DOES_NOT_COVER_POINTERS',
+          workspace_root: dir,
+          pointers: [{ path: 'calc.ts' }],
+          git_patch: 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n+# docs\n',
+        }),
+      /PATCH_DOES_NOT_COVER_POINTERS/i,
+      'Patch not covering pointer files must be rejected with PATCH_DOES_NOT_COVER_POINTERS'
+    );
+
+    // Verify C-quoted space paths and legitimate identifier names (e.g., my file.ts) work cleanly
+    const spacedFile = path.join(dir, 'my file.ts');
+    fs.writeFileSync(spacedFile, 'export const spaced = 1;\n', 'utf8');
+    const spacedPatch = [
+      'diff --git "a/my file.ts" "b/my file.ts"',
+      '--- "a/my file.ts"',
+      '+++ "b/my file.ts"',
+      '@@ -1 +1 @@',
+      '+export const spaced = 1;',
+      '',
+    ].join('\n');
+    const spacedDispatch = engine.dispatchContract({
+      target_agent: 'workbuddy',
+      task_type: 'code_review',
+      title: 'C-quoted space path diff test',
+      context_summary: 'Verify C-quoted diff --git paths cover pointers',
+      workspace_root: dir,
+      pointers: [{ path: 'my file.ts' }],
+      git_patch: spacedPatch,
+    });
+    assert.ok(spacedDispatch.patch_sha256, 'C-quoted path with spaces must be accepted when covering pointer');
+    console.log('  PASS [19D - Unified Diff & Pointer Coverage Gates]: Prose strings (NOT_A_UNIFIED_DIFF) and partial patches (PATCH_DOES_NOT_COVER_POINTERS) rejected; C-quoted space paths accepted.');
+
+    // 19E: R1 — a header-only patch names files but carries no reviewable diff content and MUST be rejected
+    assert.throws(
+      () =>
+        engine.dispatchContract({
+          target_agent: 'workbuddy',
+          task_type: 'code_review',
+          title: 'Single --- header line only',
+          context_summary: 'Must fail EMPTY_PATCH_HUNKS',
+          workspace_root: dir,
+          pointers: [{ path: 'calc.ts' }],
+          git_patch: '--- a/calc.ts',
+        }),
+      /EMPTY_PATCH_HUNKS/i,
+      'A 13-byte single `--- a/calc.ts` line must be rejected with EMPTY_PATCH_HUNKS'
+    );
+
+    assert.throws(
+      () =>
+        engine.dispatchContract({
+          target_agent: 'workbuddy',
+          task_type: 'code_review',
+          title: 'Header-only patch with zero hunks',
+          context_summary: 'Must fail EMPTY_PATCH_HUNKS',
+          workspace_root: dir,
+          pointers: [{ path: 'calc.ts' }],
+          git_patch: '--- a/calc.ts\n+++ b/calc.ts',
+        }),
+      /EMPTY_PATCH_HUNKS/i,
+      'A header-only patch (--- / +++, zero hunks) must be rejected with EMPTY_PATCH_HUNKS'
+    );
+
+    assert.throws(
+      () =>
+        engine.dispatchContract({
+          target_agent: 'workbuddy',
+          task_type: 'code_review',
+          title: 'Context-only hunk with no changed lines',
+          context_summary: 'Must fail EMPTY_PATCH_CONTENT',
+          workspace_root: dir,
+          pointers: [{ path: 'calc.ts' }],
+          git_patch: [
+            '--- a/calc.ts',
+            '+++ b/calc.ts',
+            '@@ -1,2 +1,2 @@',
+            ' export const add = (a: number, b: number) => a + b;',
+            ' export const mul = (a: number, b: number) => a * b;',
+          ].join('\n'),
+        }),
+      /EMPTY_PATCH_CONTENT/i,
+      'A hunk with only context lines must be rejected with EMPTY_PATCH_CONTENT'
+    );
+
+    // A hunk body line may itself begin with `--- ` / `+++ ` (removed line starting with `--`).
+    // It must be counted as content, never mis-parsed as a file header.
+    const doubleDashPatch = [
+      'diff --git a/calc.ts b/calc.ts',
+      '--- a/calc.ts',
+      '+++ b/calc.ts',
+      '@@ -1,2 +1,2 @@',
+      '--- sql comment line',
+      '+++ added line starting with plus plus',
+      ' export const mul = (a: number, b: number) => a * b;',
+      '',
+    ].join('\n');
+    const doubleDashDispatch = engine.dispatchContract({
+      target_agent: 'workbuddy',
+      task_type: 'code_review',
+      title: 'Hunk body lines that look like headers',
+      context_summary: 'Must not be mis-parsed as file headers',
+      workspace_root: dir,
+      pointers: [{ path: 'calc.ts' }],
+      git_patch: doubleDashPatch,
+    });
+    assert.ok(
+      doubleDashDispatch.patch_sha256,
+      'Hunk body lines beginning with --- / +++ must be treated as content, not headers'
+    );
+    console.log(
+      '  PASS [19E - Hunk & Content Gates]: Header-only (13B single line / 28B --- + +++) rejected as EMPTY_PATCH_HUNKS; context-only hunk rejected as EMPTY_PATCH_CONTENT; --- / +++ payload lines inside a hunk counted as content.'
+    );
+
+    // 19C: CLI --patch-file integration
+    const patchFilePath = path.join(dir, 'changes.patch');
+    fs.writeFileSync(patchFilePath, samplePatch, 'utf8');
+    const cliPayloadPath = path.join(dir, 'dispatch-patch.json');
+    fs.writeFileSync(
+      cliPayloadPath,
+      JSON.stringify({
+        requester_agent: 'antigravity',
+        target_agent: 'workbuddy',
+        task_type: 'code_review',
+        title: 'CLI --patch-file dispatch test',
+        context_summary: 'Verify --patch-file attaches git_patch',
+        workspace_root: dir,
+        pointers: [{ path: 'calc.ts' }],
+      }),
+      'utf8'
+    );
+
+    const cliPath = path.resolve('dist/cli.js');
+    const cliOut = await new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
+      execFile(
+        process.execPath,
+        ['--experimental-sqlite', cliPath, 'dispatch', '--file', cliPayloadPath, '--patch-file', patchFilePath],
+        { env: { ...process.env, FERRYCAT_DB_PATH: dbPath } },
+        (err, stdout, stderr) => resolve({ code: err ? ((err.code as number) ?? 1) : 0, stdout, stderr })
+      );
+    });
+    assert.strictEqual(cliOut.code, 0, `CLI dispatch --patch-file failed: ${cliOut.stderr}`);
+    const parsedCliDispatch = JSON.parse(cliOut.stdout);
+    assert.strictEqual(parsedCliDispatch.patch_sha256, expectedPatchSha);
+    console.log('  PASS [19C - CLI --patch-file]: ferrycat-cli dispatch --patch-file attached and hashed patch payload.');
+  } finally {
+    engine.close();
+    cleanup();
+  }
+}
+
+async function test20_DaemonJournalAndCrashSelfHealing(): Promise<void> {
+  console.log('\n[Test 20] Phase 3 Step 2: Daemon Write-Ahead Journal (daemon-journal.jsonl) & Crash Self-Healing');
+  const { FerryCatDaemon } = await import('../src/daemon.js');
+  const { dir, dbPath, cleanup } = createTempWorkspace('step2-daemon-journal');
+
+  try {
+    const sampleFile = path.join(dir, 'app.ts');
+    fs.writeFileSync(sampleFile, 'export const ready = true;\n', 'utf8');
+
+    const handlerFile = path.join(dir, 'ok-handler.cjs');
+    fs.writeFileSync(
+      handlerFile,
+      `
+      const fs = require('node:fs');
+      const raw = fs.readFileSync(0, 'utf8');
+      const contract = JSON.parse(raw);
+      process.stdout.write(JSON.stringify({
+        result_summary: "Handled " + contract.contract_id + " cleanly",
+        structured_output: { ok: true }
+      }) + "\\n");
+      `,
+      'utf8'
+    );
+
+    const cfgPath = path.join(dir, 'ferrycat.config.json');
+    fs.writeFileSync(
+      cfgPath,
+      JSON.stringify({
+        version: 1,
+        daemon: {
+          lock_id: 'journal-lock',
+          lease_ttl_sec: 10,
+          heartbeat_interval_ms: 2000,
+          poll_interval_ms: 500,
+          notify: false,
+        },
+        agents: {
+          workbuddy: {
+            handlers: {
+              code_review: {
+                exec_file: handlerFile,
+              },
+            },
+          },
+        },
+      }),
+      'utf8'
+    );
+
+    // 20A: Normal lifecycle write-ahead journal trail (TASK_DISPATCHING -> CHILD_SPAWNED -> TASK_SETTLED)
+    const daemonA = new FerryCatDaemon({ configPath: cfgPath, dbPath, notify: false });
+    const cNormal = daemonA.engine.dispatchContract({
+      requester_agent: 'antigravity',
+      target_agent: 'workbuddy',
+      task_type: 'code_review',
+      title: 'Normal journal trail test',
+      context_summary: 'Verify write-ahead journal entries on normal execution',
+      workspace_root: dir,
+      pointers: [{ path: 'app.ts' }],
+    });
+
+    const cycleRes = await daemonA.pollAndDispatchOnce();
+    assert.strictEqual(cycleRes.processed, true);
+    assert.strictEqual(cycleRes.contract_id, cNormal.contract_id);
+    assert.strictEqual(cycleRes.status, 'COMPLETED');
+
+    const entriesA = daemonA.readJournalEntries();
+    const eventsForNormal = entriesA.filter((e) => e.contract_id === cNormal.contract_id).map((e) => e.event);
+    assert.deepStrictEqual(
+      eventsForNormal,
+      ['TASK_DISPATCHING', 'CHILD_SPAWNED', 'TASK_SETTLED'],
+      `Expected TASK_DISPATCHING -> CHILD_SPAWNED -> TASK_SETTLED in daemon-journal.jsonl, got ${JSON.stringify(eventsForNormal)}`
+    );
+    const spawnedEntry = entriesA.find((e) => e.contract_id === cNormal.contract_id && e.event === 'CHILD_SPAWNED');
+    assert.ok(spawnedEntry?.child_pid && spawnedEntry.child_pid > 0, 'CHILD_SPAWNED entry must record child_pid');
+    daemonA.releaseLease();
+    daemonA.engine.close();
+    console.log('  PASS [20A - Write-Ahead Journal Trail]: Recorded TASK_DISPATCHING -> CHILD_SPAWNED (with PID) -> TASK_SETTLED.');
+
+    // 20B: Simulated SIGKILL Mid-Flight Crash & Automatic Self-Healing on Takeover
+    const daemonCrashed = new FerryCatDaemon({ configPath: cfgPath, dbPath, notify: false });
+    const cOrphan = daemonCrashed.engine.dispatchContract({
+      requester_agent: 'antigravity',
+      target_agent: 'workbuddy',
+      task_type: 'code_review',
+      title: 'Orphaned mid-flight contract',
+      context_summary: 'Simulate SIGKILL after CHILD_SPAWNED before TASK_SETTLED',
+      workspace_root: dir,
+      pointers: [{ path: 'app.ts' }],
+    });
+
+    assert.strictEqual(daemonCrashed.acquireLease(), true);
+    const claimedOrphan = await daemonCrashed.engine.pollNextTask({ agent_id: 'workbuddy' });
+    assert.strictEqual(claimedOrphan.status, 'CLAIMED');
+    const orphanToken = claimedOrphan.contract!.claim_token!;
+
+    // Simulate daemon writing TASK_DISPATCHING + CHILD_SPAWNED and a truncated tail line during power loss / SIGKILL
+    daemonCrashed.appendJournalEntry({
+      event: 'TASK_DISPATCHING',
+      contract_id: cOrphan.contract_id,
+      target_agent: 'workbuddy',
+      task_type: 'code_review',
+      claim_token: orphanToken,
+      exec_file: handlerFile,
+    });
+    daemonCrashed.appendJournalEntry({
+      event: 'CHILD_SPAWNED',
+      contract_id: cOrphan.contract_id,
+      target_agent: 'workbuddy',
+      claim_token: orphanToken,
+      child_pid: 99999,
+      child_started_at: Date.now(),
+    });
+    // Append a corrupt half-written JSON line simulating abrupt power loss
+    fs.appendFileSync(daemonCrashed.journalPath, '{"seq":999,"event":"TASK_SETT', 'utf8');
+
+    // Release the DB lease lock (or let it expire) to simulate daemonCrashed dying without settling the contract
+    daemonCrashed.releaseLease();
+    daemonCrashed.engine.close();
+
+    // Now start Replacement Daemon Instance B:
+    // Calling pollAndDispatchOnce() acquires leadership -> triggers recoverFromJournal() ->
+    // heals cOrphan (records salvage + releases CLAIMED -> SUBMITTED) -> immediately re-claims and executes cOrphan to COMPLETED!
+    const daemonHealer = new FerryCatDaemon({ configPath: cfgPath, dbPath, notify: false });
+    const healCycle = await daemonHealer.pollAndDispatchOnce();
+    assert.strictEqual(healCycle.processed, true, 'Healer daemon must recover orphaned contract and execute it in the same cycle');
+    assert.strictEqual(healCycle.contract_id, cOrphan.contract_id);
+    assert.strictEqual(healCycle.status, 'COMPLETED');
+
+    const healedContract = daemonHealer.engine.inspectMeshState({ contract_id: cOrphan.contract_id }).contracts[0];
+    assert.strictEqual(healedContract.status, 'COMPLETED');
+    assert.strictEqual(healedContract.release_count, 1, 'Orphaned contract must show release_count=1 from journal recovery');
+    assert.ok(
+      String(healedContract.error_reason).includes('DAEMON_CRASH_RECOVERED'),
+      `Expected DAEMON_CRASH_RECOVERED in error_reason history, got: ${healedContract.error_reason}`
+    );
+    const salvagedMeta = healedContract.salvaged_result as Record<string, unknown> | null;
+    assert.strictEqual(salvagedMeta?.source, 'DAEMON_CRASH_JOURNAL_RECOVERY');
+    assert.strictEqual(salvagedMeta?.crashed_daemon_owner_token, daemonCrashed.ownerToken);
+    assert.strictEqual(salvagedMeta?.orphaned_child_pid, 99999);
+
+    const entriesAfterHeal = daemonHealer.readJournalEntries();
+    const recoveryEntry = entriesAfterHeal.find(
+      (e) => e.contract_id === cOrphan.contract_id && e.event === 'CRASH_RECOVERED'
+    );
+    assert.ok(recoveryEntry, 'CRASH_RECOVERED journal entry must be appended');
+    assert.strictEqual(recoveryEntry?.recovery_action, 'RELEASED_TO_QUEUE');
+    assert.strictEqual(recoveryEntry?.previous_owner_token, daemonCrashed.ownerToken);
+    console.log(
+      '  PASS [20B1 - Dead Read-Only Orphan Recovery]: Confirmed-dead read-only contract recovered via journal, salvaged forensics, re-queued, and COMPLETED.'
+    );
+
+    // 20B2: Live Orphan Process Quarantine (QUARANTINED_ORPHAN_ALIVE)
+    const liveSleeper = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+      stdio: 'ignore',
+    });
+    try {
+      assert.ok(liveSleeper.pid && liveSleeper.pid > 0, 'Sleeper child must have a live PID');
+      const cLiveOrphan = daemonHealer.engine.dispatchContract({
+        requester_agent: 'antigravity',
+        target_agent: 'workbuddy',
+        task_type: 'code_review',
+        title: 'Live orphan quarantine test',
+        context_summary: 'Verify recoverFromJournal quarantines still-running child process instead of concurrent re-queue',
+        workspace_root: dir,
+        pointers: [{ path: 'app.ts' }],
+      });
+      const pLive = await daemonHealer.engine.pollNextTask({ agent_id: 'workbuddy' });
+      const liveToken = pLive.contract!.claim_token!;
+      daemonHealer.appendJournalEntry({
+        event: 'TASK_DISPATCHING',
+        contract_id: cLiveOrphan.contract_id,
+        target_agent: 'workbuddy',
+        task_type: 'code_review',
+        claim_token: liveToken,
+        exec_file: handlerFile,
+      });
+      daemonHealer.appendJournalEntry({
+        event: 'CHILD_SPAWNED',
+        contract_id: cLiveOrphan.contract_id,
+        target_agent: 'workbuddy',
+        claim_token: liveToken,
+        child_pid: liveSleeper.pid,
+        child_started_at: Date.now(),
+      });
+      daemonHealer.releaseLease();
+      daemonHealer.engine.close();
+
+      const daemonQuarantiner = new FerryCatDaemon({ configPath: cfgPath, dbPath, notify: false });
+      assert.strictEqual(daemonQuarantiner.acquireLease(), true);
+      const quarantinedRow = daemonQuarantiner.engine.inspectMeshState({ contract_id: cLiveOrphan.contract_id }).contracts[0];
+      assert.strictEqual(
+        quarantinedRow.status,
+        'FAILED',
+        'Orphaned contract whose child PID is still alive must be quarantined as FAILED, never re-queued concurrently'
+      );
+      assert.ok(String(quarantinedRow.error_reason).includes('DAEMON_CRASH_ORPHAN_STILL_ALIVE'));
+      const qEntries = daemonQuarantiner.readJournalEntries();
+      const qEntry = qEntries.find((e) => e.contract_id === cLiveOrphan.contract_id && e.event === 'CRASH_RECOVERED');
+      assert.strictEqual(qEntry?.recovery_action, 'QUARANTINED_ORPHAN_ALIVE');
+
+      // 20B3: Mutation Task Crash Protection (MARKED_FAILED_MUTATION_UNSAFE)
+      const cMutationOrphan = daemonQuarantiner.engine.dispatchContract({
+        requester_agent: 'antigravity',
+        target_agent: 'workbuddy',
+        task_type: 'implementation',
+        title: 'Interrupted mutation contract',
+        context_summary: 'Mutation tasks must not be auto-requeued on daemon crash recovery',
+        workspace_root: dir,
+        pointers: [{ path: 'app.ts' }],
+      });
+      const pMut = await daemonQuarantiner.engine.pollNextTask({ agent_id: 'workbuddy' });
+      const mutToken = pMut.contract!.claim_token!;
+      daemonQuarantiner.appendJournalEntry({
+        event: 'TASK_DISPATCHING',
+        contract_id: cMutationOrphan.contract_id,
+        target_agent: 'workbuddy',
+        task_type: 'implementation',
+        claim_token: mutToken,
+        exec_file: handlerFile,
+      });
+      daemonQuarantiner.releaseLease();
+      daemonQuarantiner.engine.close();
+
+      const daemonMutGuard = new FerryCatDaemon({ configPath: cfgPath, dbPath, notify: false });
+      assert.strictEqual(daemonMutGuard.acquireLease(), true);
+      const mutRow = daemonMutGuard.engine.inspectMeshState({ contract_id: cMutationOrphan.contract_id }).contracts[0];
+      assert.strictEqual(
+        mutRow.status,
+        'FAILED',
+        'Interrupted mutation contract must transition to FAILED to protect workspace files'
+      );
+      assert.ok(String(mutRow.error_reason).includes('DAEMON_CRASH_MUTATION_ABORTED'));
+      const mEntries = daemonMutGuard.readJournalEntries();
+      const mEntry = mEntries.find((e) => e.contract_id === cMutationOrphan.contract_id && e.event === 'CRASH_RECOVERED');
+      assert.strictEqual(mEntry?.recovery_action, 'MARKED_FAILED_MUTATION_UNSAFE');
+      daemonMutGuard.releaseLease();
+      daemonMutGuard.engine.close();
+      console.log(
+        '  PASS [20B2/20B3 - Live Orphan Quarantine & Mutation Crash Guard]: Live child PID quarantined (QUARANTINED_ORPHAN_ALIVE) and interrupted implementation task aborted (MARKED_FAILED_MUTATION_UNSAFE).'
+      );
+    } finally {
+      try {
+        liveSleeper.kill('SIGKILL');
+      } catch {
+        // already dead
+      }
+    }
+
+    const daemonHealer2 = new FerryCatDaemon({ configPath: cfgPath, dbPath, notify: false });
+    assert.strictEqual(daemonHealer2.acquireLease(), true);
+
+    // 20C: Crash Recovery Exhaustion Circuit Breaker (when release_count === MAX_RELEASES = 3)
+    const cExhaust = daemonHealer2.engine.dispatchContract({
+      requester_agent: 'antigravity',
+      target_agent: 'workbuddy',
+      task_type: 'code_review',
+      title: 'Exhausted release quota crash test',
+      context_summary: 'Verify contract with 3 prior releases transitions to FAILED on crash recovery',
+      workspace_root: dir,
+      pointers: [{ path: 'app.ts' }],
+    });
+    // Consume all 3 releases
+    for (let i = 0; i < 3; i++) {
+      const p = await daemonHealer2.engine.pollNextTask({ agent_id: 'workbuddy' });
+      daemonHealer2.engine.releaseContract({
+        contract_id: cExhaust.contract_id,
+        agent_id: 'workbuddy',
+        claim_token: p.contract?.claim_token,
+        reason: `manual release #${i + 1}`,
+      });
+    }
+    const pFinal = await daemonHealer2.engine.pollNextTask({ agent_id: 'workbuddy' });
+    const finalToken = pFinal.contract!.claim_token!;
+    daemonHealer2.appendJournalEntry({
+      event: 'TASK_DISPATCHING',
+      contract_id: cExhaust.contract_id,
+      target_agent: 'workbuddy',
+      task_type: 'code_review',
+      claim_token: finalToken,
+      exec_file: handlerFile,
+    });
+    daemonHealer2.releaseLease();
+    daemonHealer2.engine.close();
+
+    const daemonFinal = new FerryCatDaemon({ configPath: cfgPath, dbPath, notify: false });
+    assert.strictEqual(daemonFinal.acquireLease(), true);
+    const exhaustedState = daemonFinal.engine.inspectMeshState({ contract_id: cExhaust.contract_id }).contracts[0];
+    assert.strictEqual(exhaustedState.status, 'FAILED');
+    assert.ok(String(exhaustedState.error_reason).includes('DAEMON_CRASH_RECOVERY_EXHAUSTED'));
+    daemonFinal.releaseLease();
+    daemonFinal.engine.close();
+    console.log(
+      '  PASS [20C - Crash Recovery Circuit Breaker]: Orphaned contract at max_releases (3/3) deterministically transitioned to FAILED.'
+    );
+
+    // 20D: R3/R4/R6/R7 — daemon_started_at journaling, predecessor-alive-without-child recovery,
+    // legacy journal fallback and getStatus() journal health visibility.
+    const d2Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc404-20d-'));
+    const d2Db = path.join(d2Dir, 'mesh.db');
+    const d2Cfg = path.join(d2Dir, 'cfg.json');
+    fs.writeFileSync(d2Cfg, JSON.stringify({
+      version: 1,
+      daemon: { lock_id: 'r4-lock', lease_ttl_sec: 10, heartbeat_interval_ms: 2000, poll_interval_ms: 500, notify: false },
+      agents: { workbuddy: { handlers: { code_review: { exec_file: handlerFile } } } },
+    }), 'utf8');
+
+    // A live process standing in for the still-alive predecessor daemon (PID != our own).
+    const fakePredecessor = spawn(process.execPath, ['-e', 'setTimeout(()=>{},60000)'], { stdio: 'ignore' });
+    const fakePredecessorPid = fakePredecessor.pid!;
+
+    const daemonR4 = new FerryCatDaemon({ configPath: d2Cfg, dbPath: d2Db, notify: false });
+    const cR4 = daemonR4.engine.dispatchContract({
+      requester_agent: 'antigravity',
+      target_agent: 'workbuddy',
+      task_type: 'code_review',
+      title: 'Predecessor alive but no child spawned',
+      context_summary: 'R4: must be re-queued, not burned as FAILED',
+      workspace_root: dir,
+      pointers: [{ path: 'app.ts' }],
+    });
+    assert.strictEqual(daemonR4.acquireLease(), true);
+    const pollR4 = await daemonR4.engine.pollNextTask({ agent_id: 'workbuddy' });
+    const tokenR4 = pollR4.contract!.claim_token!;
+    // Hand-write the journal so daemon_pid can point at a live process we do not own.
+    fs.writeFileSync(
+      daemonR4.journalPath,
+      JSON.stringify({
+        seq: 1,
+        timestamp: Date.now(),
+        event: 'TASK_DISPATCHING',
+        daemon_owner_token: 'crashed-predecessor-token',
+        daemon_pid: fakePredecessorPid,
+        daemon_started_at: Date.now() - 60000,
+        lock_id: 'r4-lock',
+        contract_id: cR4.contract_id,
+        target_agent: 'workbuddy',
+        task_type: 'code_review',
+        claim_token: tokenR4,
+        exec_file: handlerFile,
+      }) + '\n',
+      'utf8'
+    );
+    daemonR4.releaseLease();
+    daemonR4.engine.close();
+
+    const daemonR4Healer = new FerryCatDaemon({ configPath: d2Cfg, dbPath: d2Db, notify: false });
+    const r4Recovered = daemonR4Healer.recoverFromJournal();
+    const r4Row = daemonR4Healer.engine.inspectMeshState({ contract_id: cR4.contract_id }).contracts[0];
+    assert.strictEqual(
+      r4Recovered[0]?.action,
+      'RELEASED_TO_QUEUE',
+      `R4: a live predecessor with no live child must be re-queued (got ${r4Recovered[0]?.action})`
+    );
+    assert.strictEqual(r4Row.status, 'SUBMITTED', 'R4: contract must stay recoverable, not terminal FAILED');
+    const r4Salvage = r4Row.salvaged_result as Record<string, unknown> | null;
+    assert.strictEqual(r4Salvage?.predecessor_daemon_alive, true, 'R4: salvage must record the live predecessor');
+    assert.strictEqual(r4Salvage?.orphaned_child_alive, false, 'R4: salvage must record no live child');
+
+    // R7: getStatus() exposes journal health and lease ownership
+    const statusR4 = daemonR4Healer.getStatus();
+    assert.strictEqual(statusR4.lock_id, 'r4-lock');
+    assert.strictEqual(statusR4.journal_path, daemonR4Healer.journalPath);
+    assert.strictEqual(statusR4.journal_degraded, false);
+    assert.ok(statusR4.journal_entries >= 1, 'getStatus must report journal entry count');
+    assert.strictEqual(typeof statusR4.daemon_started_at, 'number');
+    const probeEntry = daemonR4Healer.appendJournalEntry({
+      event: 'TASK_SETTLED',
+      contract_id: 'fc_r3_probe',
+      target_agent: 'workbuddy',
+      final_status: 'COMPLETED',
+    });
+    assert.strictEqual(
+      typeof probeEntry.daemon_started_at,
+      'number',
+      'R3: every journal entry must carry daemon_started_at for PID-reuse disambiguation'
+    );
+    assert.ok(
+      probeEntry.daemon_started_at <= Date.now(),
+      'R3: daemon_started_at must not be in the future'
+    );
+    daemonR4Healer.releaseLease();
+    daemonR4Healer.engine.close();
+
+    // R6: legacy shared journal fallback for a non-global lock
+    const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc404-legacy-'));
+    const legacyCfg = path.join(legacyDir, 'cfg.json');
+    fs.writeFileSync(legacyCfg, JSON.stringify({
+      version: 1,
+      daemon: { lock_id: 'legacy-lock', lease_ttl_sec: 10, heartbeat_interval_ms: 2000, poll_interval_ms: 500, notify: false },
+      agents: {},
+    }), 'utf8');
+    const legacyBase = {
+      seq: 1,
+      timestamp: Date.now(),
+      event: 'TASK_DISPATCHING' as const,
+      daemon_owner_token: 'legacy-owner',
+      daemon_pid: 999999,
+      daemon_started_at: Date.now() - 1000,
+      contract_id: 'fc_legacy_1',
+      target_agent: 'workbuddy',
+      task_type: 'code_review',
+      claim_token: 'legacy-token',
+    };
+    fs.writeFileSync(
+      path.join(legacyDir, 'daemon-journal.jsonl'),
+      JSON.stringify({ ...legacyBase, lock_id: 'legacy-lock' }) + '\n' +
+        JSON.stringify({ ...legacyBase, seq: 2, lock_id: 'other-lock', contract_id: 'fc_other_1' }) + '\n',
+      'utf8'
+    );
+    const legacyDaemon = new FerryCatDaemon({ configPath: legacyCfg, dbPath: path.join(legacyDir, 'mesh.db'), notify: false });
+    assert.strictEqual(
+      fs.existsSync(legacyDaemon.journalPath),
+      false,
+      'per-lock journal file must not exist yet in the legacy-fallback scenario'
+    );
+    const legacyEntries = legacyDaemon.readJournalEntries();
+    assert.strictEqual(legacyEntries.length, 1, 'R6: must read only this lock_id records from the legacy shared journal');
+    assert.strictEqual(legacyEntries[0].contract_id, 'fc_legacy_1');
+    legacyDaemon.engine.close();
+
+    try { fakePredecessor.kill('SIGKILL'); } catch { /* ignore */ }
+    fs.rmSync(d2Dir, { recursive: true, force: true });
+    fs.rmSync(legacyDir, { recursive: true, force: true });
+    console.log(
+      '  PASS [20D - Predecessor-Alive Requeue, Status & Legacy Journal]: Live predecessor without a live child re-queued (RELEASED_TO_QUEUE) with salvage flags; getStatus() exposes journal health; legacy daemon-journal.jsonl read back and filtered by lock_id.'
+    );
+  } finally {
+    cleanup();
+  }
+}
+
 async function main(): Promise<void> {
   console.log('==============================================================');
   console.log(' FerryCat Offline Verification Suite (Node ' + process.version + ')');
@@ -2994,9 +3846,12 @@ async function main(): Promise<void> {
   await test15_DemoSandboxSimulation();
   await test16_DesktopNotificationAndWebhook();
   await test17_StaticAnalysisGate();
+  await test18_AsyncNonBlockingTransientRetry();
+  await test19_SelfContainedGitPatchMode();
+  await test20_DaemonJournalAndCrashSelfHealing();
 
   console.log('\n==============================================================');
-  console.log(' ALL 17 TEST SUITES PASSED GREEN');
+  console.log(' ALL 20 TEST SUITES PASSED GREEN');
   console.log('==============================================================');
 }
 

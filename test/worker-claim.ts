@@ -18,7 +18,7 @@ if (startAtMs > Date.now()) {
 
 const engine = new FerryCatEngine({ dbPath, defaultAgentName: agentId, fingerprintRetryDelayMs: 10 });
 try {
-  const res = engine.pollNextTask({ agent_id: agentId });
+  const res = await engine.pollNextTask({ agent_id: agentId });
   process.stdout.write(JSON.stringify(res) + '\n');
 } finally {
   engine.close();

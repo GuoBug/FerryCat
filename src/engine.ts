@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
+  assertSafeGitPatch,
+  assertSafePointerPath,
   computeFingerprints,
   verifyAllPointers,
   verifyAndSnapshotMutationPointers,
@@ -181,7 +183,9 @@ export class FerryCatEngine {
         release_count INTEGER NOT NULL DEFAULT 0,
         toctou_strike INTEGER NOT NULL DEFAULT 0,
         salvaged_result_json TEXT,
-        claim_token TEXT
+        claim_token TEXT,
+        git_patch TEXT,
+        patch_sha256 TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_contracts_poll
@@ -206,6 +210,8 @@ export class FerryCatEngine {
       ['toctou_strike', 'INTEGER NOT NULL DEFAULT 0'],
       ['salvaged_result_json', 'TEXT'],
       ['claim_token', 'TEXT'],
+      ['git_patch', 'TEXT'],
+      ['patch_sha256', 'TEXT'],
     ];
     const existingColumns = new Set(
       (this.db.prepare('PRAGMA table_info(contracts)').all() as Array<{ name: string }>).map(
@@ -265,6 +271,16 @@ export class FerryCatEngine {
       nowMs
     );
 
+    let gitPatch: string | null = null;
+    let patchSha256: string | null = null;
+    let patchBytes: number | undefined;
+    if (input.git_patch !== undefined) {
+      const patchInfo = assertSafeGitPatch(input.git_patch, input.pointers);
+      gitPatch = input.git_patch;
+      patchSha256 = patchInfo.sha256;
+      patchBytes = patchInfo.byteLength;
+    }
+
     const contractId = `fc_${nowMs}_${crypto.randomBytes(4).toString('hex')}`;
     const queueTtlSec = input.queue_ttl_sec ?? DEFAULT_QUEUE_TTL_SEC;
     const execTtlSec =
@@ -274,8 +290,9 @@ export class FerryCatEngine {
       INSERT INTO contracts (
         id, requester_agent, target_agent, task_type, title, context_summary,
         workspace_root, pointers_json, contract_schema_json, status,
-        retry_count, max_retries, queue_ttl_sec, exec_ttl_sec, created_at, queued_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SUBMITTED', 0, 2, ?, ?, ?, ?)
+        retry_count, max_retries, queue_ttl_sec, exec_ttl_sec, created_at, queued_at,
+        git_patch, patch_sha256
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SUBMITTED', 0, 2, ?, ?, ?, ?, ?, ?)
     `);
 
     stmt.run(
@@ -291,7 +308,9 @@ export class FerryCatEngine {
       queueTtlSec,
       execTtlSec,
       nowMs,
-      nowMs
+      nowMs,
+      gitPatch,
+      patchSha256
     );
 
     const result: DispatchContractResult = {
@@ -307,6 +326,7 @@ export class FerryCatEngine {
         last_line: fp.last_line,
         ...(fp.line_range ? { line_range: fp.line_range } : {}),
       })),
+      ...(patchSha256 ? { patch_sha256: patchSha256, patch_bytes: patchBytes } : {}),
     };
 
     if (recentlyModified) {
@@ -346,10 +366,61 @@ export class FerryCatEngine {
     }
   }
 
-  public pollNextTask(
+  /**
+   * Evaluates whether a read-only contract carrying `git_patch` can safely operate in
+   * Self-Contained Patch Mode (FC-202) when the worker's local disk differs from the
+   * requester's working tree snapshot (e.g. different Git branch or disjoint checkout).
+   *
+   * Security invariant:
+   * - All pointer paths MUST still pass `assertSafePointerPath` (sensitive files & symlink escapes are never bypassed).
+   * - `git_patch` MUST pass `assertSafeGitPatch` and match `patch_sha256`.
+   *
+   * R5: every refusal carries a machine-readable `rejectReason` so a POINTER_STALE outcome can
+   * tell "your patch is unusable" apart from "the files really drifted on disk".
+   */
+  private canAcceptSelfContainedPatch(
+    row: { git_patch?: string | null; patch_sha256?: string | null; workspace_root: string },
+    fingerprints: FileFingerprint[]
+  ): { accepted: boolean; patchSha256?: string; touchedPaths?: string[]; rejectReason?: string } {
+    if (!row.git_patch || typeof row.git_patch !== 'string' || row.git_patch.trim().length === 0) {
+      return { accepted: false, rejectReason: 'NO_PATCH_ATTACHED' };
+    }
+    try {
+      for (const fp of fingerprints) {
+        assertSafePointerPath(row.workspace_root, fp.path);
+      }
+    } catch (err) {
+      return {
+        accepted: false,
+        rejectReason: `POINTER_SECURITY_REJECTED: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    try {
+      // Enforce unified-diff validity, hunk/content presence AND full pointer coverage (FC-202 P0/R1)
+      const patchInfo = assertSafeGitPatch(row.git_patch, fingerprints);
+      if (row.patch_sha256 && patchInfo.sha256 !== row.patch_sha256) {
+        return {
+          accepted: false,
+          rejectReason: `PATCH_SHA_MISMATCH: stored ${row.patch_sha256.slice(0, 16)} != recomputed ${patchInfo.sha256.slice(0, 16)}`,
+        };
+      }
+      return {
+        accepted: true,
+        patchSha256: patchInfo.sha256,
+        touchedPaths: patchInfo.touchedPaths,
+      };
+    } catch (err) {
+      return {
+        accepted: false,
+        rejectReason: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  public async pollNextTask(
     input: PollNextTaskInput = {},
     nowMs: number = Date.now()
-  ): PollNextTaskResult {
+  ): Promise<PollNextTaskResult> {
     const agentId = this.resolveAgentIdentity(input.agent_id, 'agent_id');
 
     // Step 1: Lazy timeout sweep (SELECT first to avoid write lock contention)
@@ -395,12 +466,12 @@ export class FerryCatEngine {
           continue;
         }
 
-        // Step 4: Verify file fingerprints on disk (with 150ms transient write retry & exception guard)
+        // Step 4: Verify file fingerprints on disk (with non-blocking 150ms transient write retry, FC-203)
         let fingerprints: FileFingerprint[];
         let verification;
         try {
           fingerprints = JSON.parse(candidate.pointers_json) as FileFingerprint[];
-          verification = verifyFingerprintsWithRetry(
+          verification = await verifyFingerprintsWithRetry(
             candidate.workspace_root,
             fingerprints,
             this.fingerprintRetryDelayMs
@@ -425,25 +496,52 @@ export class FerryCatEngine {
           continue;
         }
 
-        if (!verification.valid) {
-          const errorReason = `${verification.reason}: ${verification.detail}`;
-          // CAS-protected state transition to prevent racing with concurrent timeout/cancellation
-          const updRes = this.db
-            .prepare(
-              `UPDATE contracts
-               SET status = 'POINTER_STALE', error_reason = ?
-               WHERE id = ? AND status = 'CLAIMED' AND claim_token = ?`
-            )
-            .run(errorReason, candidate.id, claimToken);
+        let patchMode: 'ATTACHED' | 'SELF_CONTAINED' | undefined = candidate.git_patch
+          ? 'ATTACHED'
+          : undefined;
 
-          if (updRes.changes > 0) {
-            lastStaleError = {
-              contract_id: candidate.id,
-              reason: verification.reason!,
-              message: `Contract "${candidate.id}" rejected as POINTER_STALE (${errorReason}). Please ask requester "${candidate.requester_agent}" to re-dispatch with fresh file fingerprints.`,
-            };
+        if (!verification.valid) {
+          // FC-202: If the worker is on a different Git branch or disjoint checkout, allow claiming
+          // in SELF_CONTAINED patch mode when a verified git_patch is attached and no security policy was violated.
+          const isReadOnlyTask =
+            candidate.task_type === 'code_review' || candidate.task_type === 'architecture_audit';
+          const patchFallback =
+            isReadOnlyTask && verification.reason !== 'SECURITY_REJECTED'
+              ? this.canAcceptSelfContainedPatch(candidate, fingerprints)
+              : {
+                  accepted: false,
+                  rejectReason: isReadOnlyTask
+                    ? 'SECURITY_REJECTED'
+                    : `TASK_TYPE_NOT_ELIGIBLE: ${candidate.task_type} is a mutation task`,
+                };
+
+          if (patchFallback.accepted) {
+            patchMode = 'SELF_CONTAINED';
+          } else {
+            // R5: surface WHY the patch fallback was refused, so a stale claim can be diagnosed
+            // as "bad patch" vs "files really drifted" without re-reading the source.
+            const patchNote = candidate.git_patch
+              ? ` [patch_rejected: ${patchFallback.rejectReason ?? 'UNKNOWN'}]`
+              : '';
+            const errorReason = `${verification.reason}: ${verification.detail}${patchNote}`;
+            // CAS-protected state transition to prevent racing with concurrent timeout/cancellation
+            const updRes = this.db
+              .prepare(
+                `UPDATE contracts
+                 SET status = 'POINTER_STALE', error_reason = ?
+                 WHERE id = ? AND status = 'CLAIMED' AND claim_token = ?`
+              )
+              .run(errorReason, candidate.id, claimToken);
+
+            if (updRes.changes > 0) {
+              lastStaleError = {
+                contract_id: candidate.id,
+                reason: verification.reason!,
+                message: `Contract "${candidate.id}" rejected as POINTER_STALE (${errorReason}). Please ask requester "${candidate.requester_agent}" to re-dispatch with fresh file fingerprints.`,
+              };
+            }
+            continue;
           }
-          continue;
         }
 
         return {
@@ -464,6 +562,19 @@ export class FerryCatEngine {
             claimed_at: nowMs,
             exec_ttl_sec: candidate.exec_ttl_sec,
             claim_token: claimToken,
+            ...(candidate.git_patch
+              ? {
+                  git_patch: candidate.git_patch,
+                  patch_sha256: candidate.patch_sha256 ?? null,
+                  patch_mode: patchMode,
+                  ...(patchMode === 'SELF_CONTAINED'
+                    ? {
+                        workspace_warning:
+                          'SELF_CONTAINED_PATCH_MODE: On-disk pointer files do NOT match the dispatched revision (cross-branch or disjoint checkout). Do NOT review stale on-disk files directly; inspect contract.git_patch as the authoritative diff baseline.',
+                      }
+                    : {}),
+                }
+              : {}),
           },
         };
       }
@@ -526,8 +637,26 @@ export class FerryCatEngine {
       ? verifyAndSnapshotMutationPointers(row.workspace_root, fingerprints, input.artifacts_pointers)
       : verifyAllPointers(row.workspace_root, fingerprints);
 
-    if (!toctouCheck.valid && toctouCheck.firstFailure) {
-      const toctouReason = `TOCTOU_${toctouCheck.firstFailure.reason}: ${toctouCheck.firstFailure.detail}`;
+    const hasSecurityRejection = toctouCheck.dirtyFiles.some((d) => d.reason === 'SECURITY_REJECTED');
+    const patchFallback =
+      !toctouCheck.valid && !isMutationTask && !hasSecurityRejection
+        ? this.canAcceptSelfContainedPatch(row, fingerprints)
+        : {
+            accepted: false,
+            rejectReason: isMutationTask
+              ? `MUTATION_TASK_NO_PATCH_FALLBACK: ${row.task_type}`
+              : hasSecurityRejection
+                ? 'SECURITY_REJECTED'
+                : undefined,
+          };
+
+    if (!toctouCheck.valid && toctouCheck.firstFailure && !patchFallback.accepted) {
+      // R5: append the concrete patch refusal so the holder can tell a bad patch from real drift
+      const patchNote =
+        row.git_patch && patchFallback.rejectReason
+          ? ` [patch_rejected: ${patchFallback.rejectReason}]`
+          : '';
+      const toctouReason = `TOCTOU_${toctouCheck.firstFailure.reason}: ${toctouCheck.firstFailure.detail}${patchNote}`;
       const nextStrike = (row.toctou_strike ?? 0) + 1;
 
       if (nextStrike <= MAX_TOCTOU_STRIKES) {
@@ -587,10 +716,32 @@ export class FerryCatEngine {
       };
     }
 
-    const verifiedShaMap =
-      isMutationTask && 'verifiedShaMap' in toctouCheck
-        ? toctouCheck.verifiedShaMap
-        : Object.fromEntries(fingerprints.map((fp) => [fp.path, fp.sha256]));
+    let verifiedShaMap: Record<string, string>;
+    if (isMutationTask && 'verifiedShaMap' in toctouCheck) {
+      verifiedShaMap = { ...(toctouCheck as { verifiedShaMap: Record<string, string> }).verifiedShaMap };
+    } else if (patchFallback.accepted) {
+      // FC-202 Audit Integrity (P0): Never record unverified on-disk pointer hashes as verified_sha256.
+      // Only include pointer files whose on-disk SHA-256 actually matched the dispatched baseline.
+      const dirtyPathsSet = new Set(toctouCheck.dirtyFiles.map((d) => d.path));
+      verifiedShaMap = {};
+      for (const fp of fingerprints) {
+        if (!dirtyPathsSet.has(fp.path)) {
+          verifiedShaMap[fp.path] = fp.sha256;
+        }
+      }
+      verifiedShaMap.__patch_mode__ = 'SELF_CONTAINED';
+      verifiedShaMap.__git_patch_sha256__ = row.patch_sha256 ?? patchFallback.patchSha256 ?? '';
+      // R2: explicit YES/NO instead of the string 'false' (a truthy value in JS).
+      verifiedShaMap.__verified_on_disk__ = 'NO';
+      verifiedShaMap.__unverified_pointers__ = toctouCheck.dirtyFiles.map((d) => d.path).join(',');
+    } else {
+      verifiedShaMap = Object.fromEntries(fingerprints.map((fp) => [fp.path, fp.sha256]));
+      if (row.patch_sha256) {
+        verifiedShaMap.__patch_mode__ = 'ATTACHED';
+        verifiedShaMap.__git_patch_sha256__ = row.patch_sha256;
+        verifiedShaMap.__verified_on_disk__ = 'YES';
+      }
+    }
     const verifiedSha256Json = JSON.stringify(verifiedShaMap);
 
     // Validate against contract_schema if defined
@@ -963,6 +1114,7 @@ export class FerryCatEngine {
    */
   public getLeaseSnapshot(contractId: string): {
     status: string;
+    task_type: string;
     claim_token: string | null;
     claimed_at: number | null;
     exec_ttl_sec: number;
@@ -970,11 +1122,12 @@ export class FerryCatEngine {
   } | null {
     const row = this.db
       .prepare(
-        `SELECT status, claim_token, claimed_at, exec_ttl_sec, extend_count FROM contracts WHERE id = ?`
+        `SELECT status, task_type, claim_token, claimed_at, exec_ttl_sec, extend_count FROM contracts WHERE id = ?`
       )
       .get(contractId) as
       | {
           status: string;
+          task_type: string;
           claim_token: string | null;
           claimed_at: number | null;
           exec_ttl_sec: number;
@@ -1199,6 +1352,30 @@ export class FerryCatEngine {
       };
     }
 
+    const hasSecurityRejection = check.dirtyFiles.some((d) => d.reason === 'SECURITY_REJECTED');
+    const patchFallback =
+      !isMutationTask && !hasSecurityRejection
+        ? this.canAcceptSelfContainedPatch(row, fingerprints)
+        : { accepted: false };
+
+    if (patchFallback.accepted) {
+      const fulfillable = row.status === 'CLAIMED';
+      return {
+        ok: true,
+        valid: true,
+        contract_id: row.id,
+        status: row.status,
+        fulfillable,
+        target_agent: row.target_agent,
+        toctou_strike: toctouStrike,
+        max_toctou_strikes: MAX_TOCTOU_STRIKES,
+        dirty_files: check.dirtyFiles,
+        message: fulfillable
+          ? `Self-contained git_patch baseline verified (sha256: ${patchFallback.patchSha256?.slice(0, 16)}...) for cross-branch contract "${row.id}". Safe to fulfill despite ${check.dirtyFiles.length} local working-tree difference(s).${holderNote}`
+          : `Self-contained git_patch baseline verified for contract "${row.id}", but contract status is '${row.status}' and it can no longer be fulfilled.${holderNote}`,
+      };
+    }
+
     const dirtyPaths = check.dirtyFiles.map((d) => d.path).join(', ');
     return {
       ok: true,
@@ -1284,6 +1461,9 @@ export class FerryCatEngine {
         release_count: r.release_count ?? 0,
         toctou_strike: r.toctou_strike ?? 0,
         pointers: JSON.parse(r.pointers_json),
+        patch_sha256: r.patch_sha256 ?? null,
+        patch_bytes: r.git_patch ? Buffer.byteLength(r.git_patch, 'utf8') : null,
+        ...(input.include_patch ? { git_patch: r.git_patch ?? null } : {}),
         contract_schema: r.contract_schema_json ? JSON.parse(r.contract_schema_json) : null,
         result_summary: r.result_summary,
         structured_output: r.structured_output_json ? JSON.parse(r.structured_output_json) : null,

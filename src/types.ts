@@ -68,6 +68,10 @@ export interface ContractRow {
   salvaged_result_json?: string | null;
   /** Exclusive lease token issued at claim time (FC-301). NULL for unassigned or released rows. */
   claim_token?: string | null;
+  /** Optional unified git diff patch payload for cross-branch / self-contained reviews (FC-202). */
+  git_patch?: string | null;
+  /** SHA-256 hex digest of git_patch when present (FC-202). */
+  patch_sha256?: string | null;
 }
 
 export interface DispatchContractInput {
@@ -81,6 +85,8 @@ export interface DispatchContractInput {
   contract_schema?: Record<string, unknown>;
   queue_ttl_sec?: number;
   exec_ttl_sec?: number;
+  /** Optional unified git diff patch snapshot (max 512KB) for cross-branch / disjoint workspace handoffs (FC-202). */
+  git_patch?: string;
 }
 
 export interface DispatchContractResult {
@@ -96,6 +102,8 @@ export interface DispatchContractResult {
     last_line: string;
     line_range?: [number, number];
   }>;
+  patch_sha256?: string;
+  patch_bytes?: number;
   warning?: string;
 }
 
@@ -121,6 +129,14 @@ export interface PollNextTaskResult {
     exec_ttl_sec: number;
     /** Exclusive lease token issued for this claim session (FC-301). Pass to mutating operations. */
     claim_token?: string;
+    /** Optional unified git diff patch carried by the contract (FC-202). */
+    git_patch?: string | null;
+    /** SHA-256 hex digest of git_patch when present (FC-202). */
+    patch_sha256?: string | null;
+    /** Indicates whether the contract was claimed with an attached patch or via self-contained cross-branch fallback (FC-202). */
+    patch_mode?: 'ATTACHED' | 'SELF_CONTAINED';
+    /** Explicit warning emitted when patch_mode === 'SELF_CONTAINED' alerting the worker that on-disk files do not match the reviewed revision (FC-202). */
+    workspace_warning?: string;
   };
   stale_error?: {
     contract_id: string;
@@ -234,6 +250,8 @@ export interface InspectMeshStateInput {
   target_agent?: string;
   status?: ContractStatus | 'ACTIVE' | 'ALL';
   limit?: number;
+  /** When true, includes the raw git_patch string in each inspected contract row (default: false to avoid multi-hundred-KB responses). */
+  include_patch?: boolean;
 }
 
 export interface DaemonLockRow {

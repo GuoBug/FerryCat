@@ -140,7 +140,7 @@ Retrieves and claims next available contract work for the current agent, transit
   PollNextTaskShape,
   async (args) => {
     try {
-      const result = engine.pollNextTask(args);
+      const result = await engine.pollNextTask(args);
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
       };

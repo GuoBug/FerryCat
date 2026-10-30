@@ -27,6 +27,7 @@ import type { PollNextTaskResult } from './types.js';
 export interface DaemonOptions {
   configPath?: string;
   dbPath?: string;
+  journalPath?: string;
   targetAgent?: string;
   lockId?: string;
   leaseTtlSec?: number;
@@ -34,6 +35,74 @@ export interface DaemonOptions {
   pollIntervalMs?: number;
   once?: boolean;
   notify?: boolean;
+}
+
+export type DaemonJournalEvent =
+  | 'TASK_DISPATCHING'
+  | 'CHILD_SPAWNED'
+  | 'TASK_SETTLED'
+  | 'CRASH_RECOVERED';
+
+export type JournalRecoveryAction =
+  | 'RELEASED_TO_QUEUE'
+  | 'MARKED_FAILED_MAX_RELEASES'
+  | 'MARKED_FAILED_MUTATION_UNSAFE'
+  | 'MARKED_FAILED_MISSING_CLAIM_TOKEN'
+  | 'QUARANTINED_ORPHAN_ALIVE'
+  | 'ALREADY_SETTLED';
+
+export interface DaemonJournalEntry {
+  seq: number;
+  timestamp: number;
+  event: DaemonJournalEvent;
+  daemon_owner_token: string;
+  daemon_pid: number;
+  /** R3: wall-clock start time of the writing daemon process, used to disambiguate PID reuse. */
+  daemon_started_at?: number;
+  lock_id: string;
+  contract_id: string;
+  target_agent: string;
+  task_type?: string;
+  claim_token?: string;
+  exec_file?: string;
+  child_pid?: number | null;
+  child_started_at?: number;
+  final_status?: string;
+  previous_owner_token?: string;
+  recovery_action?: JournalRecoveryAction;
+}
+
+export interface JournalRecoveryItem {
+  contract_id: string;
+  target_agent: string;
+  claim_token?: string;
+  previous_owner_token: string;
+  previous_pid: number;
+  child_pid?: number | null;
+  action: JournalRecoveryAction;
+}
+
+const MAX_JOURNAL_LINES_BEFORE_COMPACT = 500;
+const COMPACT_RETAIN_LINES = 100;
+
+/**
+ * Non-destructive OS liveness probe via `process.kill(pid, 0)`.
+ * Never sends a termination signal (respecting CK-05 PID-reuse safety), only checks whether
+ * the OS kernel still reports an active process for `pid`.
+ */
+export function isProcessAlive(pid?: number | null): boolean {
+  if (!pid || typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err: unknown) {
+    if (err && typeof err === 'object' && 'code' in err && (err as { code?: string }).code === 'EPERM') {
+      return true;
+    }
+    return false;
+  }
 }
 
 export function loadFerryCatConfig(customConfigPath?: string): {
@@ -285,6 +354,7 @@ export class FerryCatDaemon {
   public readonly engine: FerryCatEngine;
   public readonly config: FerryCatConfigFile;
   public readonly configPath: string | null;
+  public readonly journalPath: string;
   public readonly lockId: string;
   public readonly leaseTtlSec: number;
   public readonly heartbeatIntervalMs: number;
@@ -293,9 +363,16 @@ export class FerryCatDaemon {
   public readonly targetAgentFilter?: string;
   public readonly notifyEnabled: boolean;
   public readonly webhookUrl?: string;
+  /** R3: wall-clock start of this daemon instance, journaled so a successor can disambiguate PID reuse. */
+  public readonly daemonStartedAt: number = Math.floor(Date.now() - process.uptime() * 1000);
+  public journalDegraded: boolean = false;
+  public lastJournalError: string | null = null;
 
   private isRunning: boolean = false;
   private isLeader: boolean = false;
+  private journalSeq: number = 0;
+  private settledSinceLastCompact: number = 0;
+  private journalDegradedReported: boolean = false;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
   private signalCleanupRegistered: boolean = false;
@@ -309,6 +386,23 @@ export class FerryCatDaemon {
     this.engine = new FerryCatEngine({ dbPath: options.dbPath });
 
     this.lockId = options.lockId ?? config.daemon.lock_id ?? 'global';
+    const safeLockSuffix =
+      this.lockId === 'global'
+        ? 'daemon-journal.jsonl'
+        : `daemon-journal-${this.lockId.replace(/[^a-zA-Z0-9_-]/g, '_')}.jsonl`;
+
+    const customJournal = options.journalPath ?? config.daemon.journal_path;
+    this.journalPath = customJournal
+      ? path.resolve(expandTilde(customJournal))
+      : path.join(path.dirname(this.engine.dbPath), safeLockSuffix);
+
+    // Backfill journalSeq from existing journal entries so seq stays strictly monotonic across restarts
+    const existingEntries = this.readJournalEntries();
+    for (const entry of existingEntries) {
+      if (typeof entry.seq === 'number' && Number.isFinite(entry.seq) && entry.seq > this.journalSeq) {
+        this.journalSeq = entry.seq;
+      }
+    }
     
     // Ensure lease TTL is at least 5 seconds
     const reqTtl = options.leaseTtlSec ?? config.daemon.lease_ttl_sec ?? 30;
@@ -358,6 +452,7 @@ export class FerryCatDaemon {
   }
 
   public acquireLease(): boolean {
+    const wasLeader = this.isLeader;
     try {
       const res = this.engine.acquireDaemonLease({
         lock_id: this.lockId,
@@ -373,6 +468,9 @@ export class FerryCatDaemon {
 
       if (res.ok) {
         this.isLeader = true;
+        if (!wasLeader) {
+          this.recoverFromJournal();
+        }
         return true;
       }
       this.isLeader = false;
@@ -386,6 +484,463 @@ export class FerryCatDaemon {
       }
       return false;
     }
+  }
+
+  /**
+   * Synchronously appends a write-ahead record to `daemon-journal.jsonl` (Phase 3 Step 2).
+   * Guaranteed to flush before child spawn and after task completion so sudden SIGKILL / power loss
+   * leaves an auditable breadcrumb for the next daemon leader to self-heal.
+   */
+  public appendJournalEntry(
+    partial: Omit<
+      DaemonJournalEntry,
+      'seq' | 'timestamp' | 'daemon_owner_token' | 'daemon_pid' | 'daemon_started_at' | 'lock_id'
+    >
+  ): DaemonJournalEntry {
+    this.journalSeq += 1;
+    const entry: DaemonJournalEntry = {
+      seq: this.journalSeq,
+      timestamp: Date.now(),
+      daemon_owner_token: this.ownerToken,
+      daemon_pid: process.pid,
+      daemon_started_at: this.daemonStartedAt,
+      lock_id: this.lockId,
+      ...partial,
+    };
+    try {
+      const dir = path.dirname(this.journalPath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      let prefix = '';
+      if (fs.existsSync(this.journalPath)) {
+        const stat = fs.statSync(this.journalPath);
+        if (stat.size > 0) {
+          const fd = fs.openSync(this.journalPath, 'r');
+          try {
+            const lastByte = Buffer.alloc(1);
+            fs.readSync(fd, lastByte, 0, 1, stat.size - 1);
+            if (lastByte[0] !== 0x0a) {
+              prefix = '\n';
+            }
+          } finally {
+            fs.closeSync(fd);
+          }
+        }
+      }
+      fs.appendFileSync(this.journalPath, prefix + JSON.stringify(entry) + '\n', 'utf8');
+      this.journalDegraded = false;
+    } catch (err) {
+      // Journal write is best-effort if disk is read-only; never crash the daemon loop,
+      // but expose journalDegraded state and emit an operator warning on first transition.
+      const wasDegraded = this.journalDegraded;
+      this.journalDegraded = true;
+      this.lastJournalError = err instanceof Error ? err.message : String(err);
+      if (!wasDegraded && this.notifyEnabled) {
+        notifyOperator(
+          'Journal Degraded',
+          `Failed to append write-ahead journal at '${this.journalPath}': ${this.lastJournalError}`,
+          { level: 'warn', event: 'JOURNAL_DEGRADED', webhookUrl: this.webhookUrl }
+        );
+      }
+    }
+    return entry;
+  }
+
+  /**
+   * Reads all valid JSONL records from this daemon's journal file, tolerating partial/corrupt tail lines.
+   *
+   * R6 (upgrade compatibility): before per-lock_id journal files existed, every daemon wrote into a
+   * single shared `daemon-journal.jsonl`. When this instance is a non-`global` lock whose own file does
+   * not exist yet, fall back to that legacy file and keep only the records belonging to this lock_id,
+   * so in-flight contracts written by the previous version are still recovered instead of silently
+   * stranded as CLAIMED until the TTL sweep kills them.
+   */
+  public readJournalEntries(): DaemonJournalEntry[] {
+    let readPath = this.journalPath;
+    let filterLockId: string | null = null;
+    if (!fs.existsSync(readPath) && this.lockId !== 'global') {
+      const legacyPath = path.join(path.dirname(this.journalPath), 'daemon-journal.jsonl');
+      if (fs.existsSync(legacyPath)) {
+        readPath = legacyPath;
+        filterLockId = this.lockId;
+      }
+    }
+    if (!fs.existsSync(readPath)) {
+      return [];
+    }
+    try {
+      const raw = fs.readFileSync(readPath, 'utf8');
+      const lines = raw.split(/\r?\n/);
+      const entries: DaemonJournalEntry[] = [];
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const parsed = JSON.parse(trimmed) as DaemonJournalEntry;
+          if (parsed && typeof parsed === 'object' && parsed.contract_id && parsed.event) {
+            if (filterLockId && parsed.lock_id !== filterLockId) continue;
+            entries.push(parsed);
+          }
+        } catch {
+          // Tolerate truncated tail line from sudden power loss / crash
+        }
+      }
+      return entries;
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Scans `daemon-journal.jsonl` upon acquiring leadership and heals any in-flight contracts
+   * orphaned by a crashed predecessor daemon instance (Phase 3 Step 2, FC-404).
+   *
+   * Safety invariants:
+   *  - CK-05 (PID reuse safety): never sends kill signals to bare numeric PIDs from old runs.
+   *  - Liveness quarantine: probes `isProcessAlive(child_pid)` and `isProcessAlive(daemon_pid)`.
+   *    If the predecessor daemon or orphaned child is still alive (e.g. GC pause / lease expiry),
+   *    quarantines the contract as `FAILED` (`QUARANTINED_ORPHAN_ALIVE`) instead of re-queueing
+   *    to prevent concurrent double-execution on the same workspace.
+   *  - Mutation task protection: `implementation` and `test_generation` tasks interrupted mid-flight
+   *    are never auto-requeued (`MARKED_FAILED_MUTATION_UNSAFE`) to protect working-tree integrity.
+   *  - Read-only tasks (`code_review` / `architecture_audit`) whose predecessor & child are confirmed
+   *    dead are released back to the `SUBMITTED` queue (or marked `FAILED` if `MAX_RELEASES` is reached).
+   */
+  public recoverFromJournal(): JournalRecoveryItem[] {
+    const entries = this.readJournalEntries();
+    if (entries.length === 0) return [];
+
+    // Group flight state by (contract_id + claim_token) for this lockId
+    const inFlightMap = new Map<
+      string,
+      {
+        contract_id: string;
+        target_agent: string;
+        task_type?: string;
+        claim_token?: string;
+        exec_file?: string;
+        daemon_owner_token: string;
+        daemon_pid: number;
+        child_pid?: number | null;
+        child_started_at?: number;
+        settled: boolean;
+      }
+    >();
+
+    for (const entry of entries) {
+      if (entry.lock_id && entry.lock_id !== this.lockId) continue;
+      const key = `${entry.contract_id}::${entry.claim_token ?? ''}`;
+
+      if (entry.event === 'TASK_DISPATCHING') {
+        inFlightMap.set(key, {
+          contract_id: entry.contract_id,
+          target_agent: entry.target_agent,
+          task_type: entry.task_type,
+          claim_token: entry.claim_token,
+          exec_file: entry.exec_file,
+          daemon_owner_token: entry.daemon_owner_token,
+          daemon_pid: entry.daemon_pid,
+          settled: false,
+        });
+      } else if (entry.event === 'CHILD_SPAWNED') {
+        const existing = inFlightMap.get(key);
+        if (existing) {
+          existing.child_pid = entry.child_pid;
+          existing.child_started_at = entry.child_started_at;
+        } else {
+          inFlightMap.set(key, {
+            contract_id: entry.contract_id,
+            target_agent: entry.target_agent,
+            claim_token: entry.claim_token,
+            daemon_owner_token: entry.daemon_owner_token,
+            daemon_pid: entry.daemon_pid,
+            child_pid: entry.child_pid,
+            child_started_at: entry.child_started_at,
+            settled: false,
+          });
+        }
+      } else if (entry.event === 'TASK_SETTLED' || entry.event === 'CRASH_RECOVERED') {
+        const existing = inFlightMap.get(key);
+        if (existing) {
+          existing.settled = true;
+        }
+      }
+    }
+
+    const recovered: JournalRecoveryItem[] = [];
+
+    for (const [, flight] of inFlightMap.entries()) {
+      if (flight.settled) continue;
+      if (flight.daemon_owner_token === this.ownerToken) continue;
+
+      let action: JournalRecoveryAction = 'ALREADY_SETTLED';
+
+      try {
+        const snap = this.engine.getLeaseSnapshot(flight.contract_id);
+        if (!snap || snap.status !== 'CLAIMED') {
+          action = 'ALREADY_SETTLED';
+        } else if (!flight.claim_token && snap.claim_token) {
+          // Journal record lacked claim_token while DB row is protected by one: fail explicitly
+          try {
+            this.engine.recordSalvage({
+              contract_id: flight.contract_id,
+              agent_id: flight.target_agent,
+              claim_token: snap.claim_token,
+              salvage: {
+                source: 'DAEMON_CRASH_JOURNAL_RECOVERY',
+                quarantine_reason: 'MISSING_CLAIM_TOKEN',
+                recovered_at: Date.now(),
+                recovered_by_daemon: this.ownerToken,
+                crashed_daemon_owner_token: flight.daemon_owner_token,
+                crashed_daemon_pid: flight.daemon_pid,
+                orphaned_child_pid: flight.child_pid ?? null,
+              },
+            });
+          } catch {
+            // best-effort salvage
+          }
+          this.engine.failContract({
+            contract_id: flight.contract_id,
+            agent_id: flight.target_agent,
+            claim_token: snap.claim_token,
+            reason: `DAEMON_CRASH_MISSING_CLAIM_TOKEN: journal entry from '${flight.daemon_owner_token}' lacked claim_token; marked FAILED to prevent stuck CLAIMED zombie.`,
+          });
+          action = 'MARKED_FAILED_MISSING_CLAIM_TOKEN';
+        } else if (!flight.claim_token || !snap.claim_token || snap.claim_token === flight.claim_token) {
+          const effectiveToken = flight.claim_token ?? snap.claim_token ?? undefined;
+          const effectiveTaskType = flight.task_type ?? snap.task_type;
+          const isMutationTask =
+            effectiveTaskType === 'implementation' || effectiveTaskType === 'test_generation';
+
+          const childAlive = Boolean(
+            flight.child_pid && flight.child_pid !== process.pid && isProcessAlive(flight.child_pid)
+          );
+          const predecessorDaemonAlive = Boolean(
+            flight.daemon_pid && flight.daemon_pid !== process.pid && isProcessAlive(flight.daemon_pid)
+          );
+
+          // 1. Record forensic crash salvage before taking recovery action
+          try {
+            this.engine.recordSalvage({
+              contract_id: flight.contract_id,
+              agent_id: flight.target_agent,
+              claim_token: effectiveToken,
+              salvage: {
+                source: 'DAEMON_CRASH_JOURNAL_RECOVERY',
+                recovered_at: Date.now(),
+                recovered_by_daemon: this.ownerToken,
+                crashed_daemon_owner_token: flight.daemon_owner_token,
+                crashed_daemon_pid: flight.daemon_pid,
+                predecessor_daemon_alive: predecessorDaemonAlive,
+                orphaned_child_pid: flight.child_pid ?? null,
+                orphaned_child_started_at: flight.child_started_at ?? null,
+                orphaned_child_alive: childAlive,
+                task_type: effectiveTaskType,
+                exec_file: flight.exec_file ?? null,
+              },
+            });
+          } catch {
+            // best-effort salvage
+          }
+
+          if (childAlive) {
+            // R4: only a live child can still be writing the workspace, so only that case is
+            // quarantined. A live-but-stalled predecessor with no child (or an already-exited
+            // child) is recoverable: it will notice its own lease loss and clean up.
+            this.engine.failContract({
+              contract_id: flight.contract_id,
+              agent_id: flight.target_agent,
+              claim_token: effectiveToken,
+              reason: `DAEMON_CRASH_ORPHAN_STILL_ALIVE: orphaned child (pid=${flight.child_pid ?? 'none'}) from predecessor daemon (pid=${flight.daemon_pid}, alive=${predecessorDaemonAlive}) is still running; quarantined as FAILED to prevent concurrent double execution (CK-05).`,
+            });
+            action = 'QUARANTINED_ORPHAN_ALIVE';
+            if (this.notifyEnabled) {
+              notifyOperator(
+                'Orphan Quarantined',
+                `Quarantined contract ${flight.contract_id} as FAILED because orphaned child (pid=${flight.child_pid ?? 'none'}) is still alive.`,
+                { level: 'error', event: 'ORPHAN_QUARANTINED', webhookUrl: this.webhookUrl }
+              );
+            }
+          } else if (isMutationTask) {
+            // Mutation task protection: never auto-requeue interrupted implementation/test_generation tasks
+            this.engine.failContract({
+              contract_id: flight.contract_id,
+              agent_id: flight.target_agent,
+              claim_token: effectiveToken,
+              reason: `DAEMON_CRASH_MUTATION_ABORTED: mutation task (${effectiveTaskType}) interrupted by crash of '${flight.daemon_owner_token}'; auto-requeue disabled to protect workspace integrity.`,
+            });
+            action = 'MARKED_FAILED_MUTATION_UNSAFE';
+            if (this.notifyEnabled) {
+              notifyOperator(
+                'Mutation Task Aborted',
+                `Aborted interrupted mutation contract ${flight.contract_id} (${effectiveTaskType}) after daemon crash to protect workspace files.`,
+                { level: 'error', event: 'MUTATION_CRASH_ABORTED', webhookUrl: this.webhookUrl }
+              );
+            }
+          } else {
+            // 2. Read-only task, no live child: release back to queue tail even if the predecessor
+            //    daemon is still alive (PID reuse / GC stall) — it will self-release on lease loss,
+            //    and re-queueing keeps the task instead of burning it as terminal FAILED.
+            const relRes = this.engine.releaseContract({
+              contract_id: flight.contract_id,
+              agent_id: flight.target_agent,
+              claim_token: effectiveToken,
+              reason: `DAEMON_CRASH_RECOVERED: orphaned in-flight task from ${flight.daemon_owner_token} (pid=${flight.daemon_pid}) recovered via daemon-journal.jsonl`,
+            });
+
+            if (relRes.ok && relRes.status === 'SUBMITTED') {
+              action = 'RELEASED_TO_QUEUE';
+              if (this.notifyEnabled) {
+                notifyOperator(
+                  'Crash Recovered',
+                  `Recovered orphaned contract ${flight.contract_id} from crashed daemon '${flight.daemon_owner_token}' and re-queued as SUBMITTED.`,
+                  { level: 'warn', event: 'CRASH_RECOVERED', webhookUrl: this.webhookUrl }
+                );
+              }
+            } else if (!relRes.ok && relRes.status === 'CLAIMED') {
+              // Release cap (MAX_RELEASES = 3) reached: fail explicitly so it never hangs as a zombie
+              this.engine.failContract({
+                contract_id: flight.contract_id,
+                agent_id: flight.target_agent,
+                claim_token: effectiveToken,
+                reason: `DAEMON_CRASH_RECOVERY_EXHAUSTED: contract exceeded max_releases (${relRes.max_releases}) after daemon crash (${flight.daemon_owner_token}).`,
+              });
+              action = 'MARKED_FAILED_MAX_RELEASES';
+              if (this.notifyEnabled) {
+                notifyOperator(
+                  'Crash Recovery Exhausted',
+                  `Orphaned contract ${flight.contract_id} exceeded max_releases after crash of '${flight.daemon_owner_token}' and was marked FAILED.`,
+                  { level: 'error', event: 'CRASH_RECOVERY_EXHAUSTED', webhookUrl: this.webhookUrl }
+                );
+              }
+            }
+          }
+        }
+      } catch {
+        action = 'ALREADY_SETTLED';
+      }
+
+      this.appendJournalEntry({
+        event: 'CRASH_RECOVERED',
+        contract_id: flight.contract_id,
+        target_agent: flight.target_agent,
+        claim_token: flight.claim_token,
+        previous_owner_token: flight.daemon_owner_token,
+        child_pid: flight.child_pid ?? null,
+        recovery_action: action,
+      });
+
+      recovered.push({
+        contract_id: flight.contract_id,
+        target_agent: flight.target_agent,
+        claim_token: flight.claim_token,
+        previous_owner_token: flight.daemon_owner_token,
+        previous_pid: flight.daemon_pid,
+        child_pid: flight.child_pid ?? null,
+        action,
+      });
+    }
+
+    // Compact journal if all entries are now settled and file exceeds line threshold
+    const totalEntriesAfter = entries.length + recovered.length;
+    if (totalEntriesAfter > MAX_JOURNAL_LINES_BEFORE_COMPACT) {
+      this.compactJournalIfSettled();
+    }
+
+    return recovered;
+  }
+
+  public compactJournalIfSettled(): boolean {
+    if (!this.isLeader) return false;
+    const entries = this.readJournalEntries();
+    if (entries.length <= COMPACT_RETAIN_LINES) return false;
+
+    const settledKeys = new Set<string>();
+    for (const e of entries) {
+      if (e.event === 'TASK_SETTLED' || e.event === 'CRASH_RECOVERED') {
+        settledKeys.add(`${e.lock_id ?? ''}::${e.contract_id}::${e.claim_token ?? ''}`);
+      }
+    }
+    for (const e of entries) {
+      if (e.event === 'TASK_DISPATCHING' || e.event === 'CHILD_SPAWNED') {
+        if (!settledKeys.has(`${e.lock_id ?? ''}::${e.contract_id}::${e.claim_token ?? ''}`)) {
+          // Do not compact while any flight across any lock_id is still unsettled
+          return false;
+        }
+      }
+    }
+
+    const tmpPath = `${this.journalPath}.tmp.${process.pid}.${Date.now()}`;
+    try {
+      const retained = entries.slice(-COMPACT_RETAIN_LINES);
+      const content = retained.map((e) => JSON.stringify(e)).join('\n') + '\n';
+      fs.writeFileSync(tmpPath, content, 'utf8');
+      fs.renameSync(tmpPath, this.journalPath);
+      this.settledSinceLastCompact = 0;
+      return true;
+    } catch {
+      try {
+        if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+      } catch {
+        // ignore cleanup failure
+      }
+      return false;
+    }
+  }
+
+  /**
+   * R7: operator-facing snapshot of the daemon's lease and journal health.
+   * Exposes `journalDegraded` / `lastJournalError`, which were previously only internal fields
+   * with no reader — a silently degraded write-ahead journal now shows up here and on stderr.
+   */
+  public getStatus(): {
+    lock_id: string;
+    is_leader: boolean;
+    owner_token: string;
+    daemon_pid: number;
+    daemon_started_at: number;
+    journal_path: string;
+    journal_degraded: boolean;
+    last_journal_error: string | null;
+    journal_entries: number;
+    lease: {
+      owner_token: string;
+      heartbeat_at: number;
+      expires_at: number;
+      metadata: unknown;
+    } | null;
+    lease_held_by_self: boolean;
+  } {
+    const lease = this.engine.inspectDaemonLease(this.lockId);
+    let metadata: unknown = null;
+    if (lease?.metadata_json) {
+      try {
+        metadata = JSON.parse(lease.metadata_json);
+      } catch {
+        metadata = lease.metadata_json;
+      }
+    }
+    return {
+      lock_id: this.lockId,
+      is_leader: this.isLeader,
+      owner_token: this.ownerToken,
+      daemon_pid: process.pid,
+      daemon_started_at: this.daemonStartedAt,
+      journal_path: this.journalPath,
+      journal_degraded: this.journalDegraded,
+      last_journal_error: this.lastJournalError,
+      journal_entries: this.readJournalEntries().length,
+      lease: lease
+        ? {
+            owner_token: lease.owner_token,
+            heartbeat_at: lease.heartbeat_at,
+            expires_at: lease.expires_at,
+            metadata,
+          }
+        : null,
+      lease_held_by_self: Boolean(lease && lease.owner_token === this.ownerToken),
+    };
   }
 
   public renewLease(): boolean {
@@ -492,6 +1047,14 @@ export class FerryCatDaemon {
     status?: string;
     reason?: string;
   }> {
+    // R7: a silently degraded write-ahead journal means crash recovery is not actually armed.
+    // Surface it once on stderr (and via getStatus()) instead of failing mute.
+    if (this.journalDegraded && !this.journalDegradedReported) {
+      this.journalDegradedReported = true;
+      process.stderr.write(
+        `[FerryCat Daemon] WARN write-ahead journal degraded at "${this.journalPath}": ${this.lastJournalError ?? 'unknown error'}. Crash recovery is not armed until writes succeed again.\n`
+      );
+    }
     if (!this.isLeader) {
       const acquired = this.acquireLease();
       if (!acquired) {
@@ -540,7 +1103,7 @@ export class FerryCatDaemon {
       }
     }
 
-    const pollResult: PollNextTaskResult = this.engine.pollNextTask({
+    const pollResult: PollNextTaskResult = await this.engine.pollNextTask({
       agent_id: agentId,
       task_types: eligibleTaskTypes,
     });
@@ -585,6 +1148,17 @@ export class FerryCatDaemon {
       claim_token: contract.claim_token,
     };
 
+    // Write-ahead journal before spawning child (Phase 3 Step 2)
+    this.appendJournalEntry({
+      event: 'TASK_DISPATCHING',
+      contract_id: contract.contract_id,
+      target_agent: contract.target_agent,
+      task_type: contract.task_type,
+      claim_token: contract.claim_token,
+      exec_file: handler.exec_file,
+    });
+
+    let settledStatus = 'ABORTED';
     try {
       // Forward configured args and pass_env (contract's own exec_ttl_sec is authoritative)
       const execResult = await executeTaskAndFulfill(
@@ -594,8 +1168,23 @@ export class FerryCatDaemon {
           execFile: handler.exec_file,
           passEnv: handler.pass_env,
           args: handler.args,
+        },
+        {
+          onEvent: (ev) => {
+            if (ev.event === 'CHILD_SPAWNED') {
+              this.appendJournalEntry({
+                event: 'CHILD_SPAWNED',
+                contract_id: contract.contract_id,
+                target_agent: contract.target_agent,
+                claim_token: contract.claim_token,
+                child_pid: (ev.pid as number | null) ?? null,
+                child_started_at: (ev.started_at as number | undefined) ?? Date.now(),
+              });
+            }
+          },
         }
       );
+      settledStatus = execResult.status;
 
       if (this.notifyEnabled) {
         const finishLevel: NotifyLevel = execResult.ok
@@ -620,7 +1209,18 @@ export class FerryCatDaemon {
         status: execResult.status,
       };
     } finally {
+      this.appendJournalEntry({
+        event: 'TASK_SETTLED',
+        contract_id: contract.contract_id,
+        target_agent: contract.target_agent,
+        claim_token: contract.claim_token,
+        final_status: settledStatus,
+      });
       this.activeInFlightContract = null;
+      this.settledSinceLastCompact += 1;
+      if (this.settledSinceLastCompact >= MAX_JOURNAL_LINES_BEFORE_COMPACT) {
+        this.compactJournalIfSettled();
+      }
     }
   }
 
