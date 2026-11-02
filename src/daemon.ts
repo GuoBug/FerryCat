@@ -1168,6 +1168,7 @@ export class FerryCatDaemon {
           execFile: handler.exec_file,
           passEnv: handler.pass_env,
           args: handler.args,
+          delivery: handler.delivery,
         },
         {
           onEvent: (ev) => {

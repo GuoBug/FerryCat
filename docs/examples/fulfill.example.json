@@ -1,0 +1,24 @@
+{
+  "contract_id": "fc_1793098036393_aea8bb9b",
+  "agent_id": "workbuddy",
+  "claim_token": "7424261d-9a3f-4a86-a7ff-de278c273e96",
+  "result_summary": "### Review: heartbeat lease checks\n\n- claim_token is verified via getLeaseSnapshot before each renewal.\n- One minor issue: HEARTBEAT_ERROR path re-reads the lease but does not log the token mismatch reason.",
+  "structured_output": {
+    "verdict": "CHANGES_REQUESTED",
+    "findings": [
+      {
+        "severity": "minor",
+        "path": "src/supervisor.ts",
+        "line": 531,
+        "message": "Lease re-read after a heartbeat error does not record why ownership was lost."
+      }
+    ],
+    "fixes": [
+      {
+        "path": "src/supervisor.ts",
+        "patch": "--- a/src/supervisor.ts\n+++ b/src/supervisor.ts\n@@ -531,2 +531,3 @@\n       try {\n+        emit({ event: 'LEASE_RECHECK', reason: message });\n         if (!stillOwnsLease()) {\n",
+        "description": "Emit a LEASE_RECHECK event before re-reading lease ownership."
+      }
+    ]
+  }
+}

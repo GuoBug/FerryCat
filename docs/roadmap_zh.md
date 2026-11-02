@@ -53,6 +53,8 @@
 - [x] **FC-202（可选 Git Patch 自包含载荷模式）**：针对两端处于不同 Git 分支的只读审查场景，支持携带统一差异补丁（`git_patch` / `--patch-file`，512KB 上限、diff 头部敏感路径黑名单、强制统一 diff 头、hunk 实质变更内容与指针全覆盖三重闸门、Worker 端 `workspace_warning` 显式告警及诚实的 `verified_sha256` 审计留痕）。
 - [x] **FC-203（异步非阻塞瞬态重试）**：将 `verifyFingerprintsWithRetry` 与 `pollNextTask` 中的 `Atomics.wait(150ms)` 彻底升级为异步非阻塞定时器等待，消灭同步阻塞技术债并保持事件循环高响应性。
 - [x] **FC-204（零配置沙箱演练 `ferrycat demo`）**：支持单命令 `npx ferrycat demo` 在 OS 临时目录自动构建隔离沙箱并跑通 4 步全流程（派单 $\to$ 认领 $\to$ 执行与真实心跳续约 $\to$ TOCTOU 复核 COMPLETED），并支持 `--keep`、`--json` 与 `--no-color`（v0.4.0 交付）。
+- [x] **FC-205（交互式 MCP 客户端配置向导 `ferrycat init`，REQ-EXP-02）**：自动检测本机已安装的 MCP 宿主（Antigravity、WorkBuddy、Cursor、VS Code、Windsurf、Claude Desktop、Claude Code），以原子写盘、原文件备份、JSONC 注释保护与冲突防覆盖机制安全注入 `ferrycat` 节点（支持 `--list`、`--dry-run`、`--yes`、`--force`、`--client`）。
+- [x] **FC-206（stdout 交付物防猜信封契约与标准范例库，REQ-ENG-04 / REQ-DOC-02 / REQ-ENG-03）**：引入确定性 `{"ferrycat_delivery": {...}}` 交付信封解析器（`--delivery auto|envelope`），彻底杜绝子进程普通 JSON 日志被误判为 `structured_output`；提供经自动化防漂移测试验证的 `docs/examples/` 标准载荷范例库，并落地零外部依赖的静态类型与门禁检查（`npm run lint`）。
 
 ---
 

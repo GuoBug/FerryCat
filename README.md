@@ -237,7 +237,7 @@ Sandbox: /tmp/ferrycat-demo-c5iK6V
 
 ### 1. Recommended: Zero-Install MCP Mounting (via npx)
 
-No local clone or manual compilation required. Mount directly into your IDE's MCP configuration using `npx -y ferrycat`:
+No local clone or manual compilation required. Run `npx ferrycat init --yes` to auto-detect installed hosts (Antigravity, WorkBuddy, Cursor, VS Code, Windsurf, Claude Desktop, Claude Code) and safely merge the `ferrycat` server entry (with backup and JSONC protection), or mount manually into your IDE's MCP configuration using `npx -y ferrycat`:
 
 #### Antigravity Configuration
 Edit `%USERPROFILE%\.gemini\antigravity\mcp_config.json` (or `~/.gemini/antigravity/mcp_config.json` on macOS/Linux):
@@ -315,7 +315,8 @@ npx ferrycat verify <CONTRACT_ID>
 Poll the queue, claim tasks, and execute local review/test scripts with automatic failure closure:
 ```bash
 # Safely run a script upon task arrival (no shell quotation hazards)
-npx ferrycat worker --agent codex --mode=exec --exec-file ./scripts/review.sh
+npx ferrycat worker --agent codex --mode=exec --exec-file ./scripts/review.sh --delivery envelope
+# See docs/examples/ for dispatch.example.json, fulfill.example.json, and handler.example.cjs templates.
 ```
 
 ### 4. Zero-Config Sandbox Walkthrough (demo)

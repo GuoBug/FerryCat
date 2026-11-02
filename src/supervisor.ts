@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { expandTilde, type FerryCatEngine } from './engine.js';
 import { FulfillContractSchema } from './schemas.js';
+import { parseExecDelivery, type DeliveryMode, type DeliverySource } from './delivery.js';
 
 export interface ContractPayload {
   contract_id: string;
@@ -39,6 +40,12 @@ export interface ExecSpec {
   passEnv?: string[];
   /** Optional argv arguments forwarded directly to the executable (when using execFile). */
   args?: string[];
+  /**
+   * REQ-ENG-04 stdout delivery mode. 'auto' (default) accepts the ferrycat_delivery envelope,
+   * legacy result_summary/structured_output keys, or plain text. 'envelope' accepts only the
+   * explicit envelope and fails the contract otherwise.
+   */
+  delivery?: DeliveryMode;
 }
 
 export interface SupervisorOptions {
@@ -64,6 +71,9 @@ export interface ExecutionResult {
   error?: string;
   contract_status?: string;
   salvaged?: boolean;
+  /** REQ-ENG-04: which stdout shape was accepted as the deliverable. */
+  delivery_source?: DeliverySource;
+  delivery_warnings?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -331,10 +341,6 @@ const SALVAGE_TAIL_CHARS = 256 * 1024;
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, n));
-}
-
-function stripBom(content: string): string {
-  return content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
 }
 
 type AbortKind = 'WINDOW_EXHAUSTED' | 'LEASE_LOST' | 'MAX_BUFFER';
@@ -612,26 +618,19 @@ export async function executeTaskAndFulfill(
   }
 
   function fulfillFromStdout(): ExecutionResult {
-    let structuredOutput: Record<string, unknown> | undefined;
-    let resultSummary = stripBom(stdout).trim();
-
-    try {
-      const parsed = JSON.parse(resultSummary);
-      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-        if (parsed.structured_output && typeof parsed.structured_output === 'object') {
-          structuredOutput = parsed.structured_output as Record<string, unknown>;
-        } else {
-          structuredOutput = parsed as Record<string, unknown>;
-        }
-        if (parsed.result_summary && typeof parsed.result_summary === 'string') {
-          resultSummary = parsed.result_summary;
-        }
-      }
-    } catch {
-      // Plain text stdout, fallback to result_summary
+    // REQ-ENG-04: only explicit delivery shapes are accepted; arbitrary JSON logs are never
+    // guessed into structured_output (see src/delivery.ts).
+    const delivery = parseExecDelivery(stdout, spec.delivery ?? 'auto');
+    if (!delivery.ok) {
+      salvageNow(delivery.code);
+      emit({ event: 'DELIVERY_REJECTED', code: delivery.code, message: delivery.message });
+      const res = failAfterExit(`${delivery.code}: ${delivery.message}`);
+      return { ...res, status: 'DELIVERY_REJECTED', salvaged };
     }
+    emit({ event: 'DELIVERY_PARSED', source: delivery.source, warnings: delivery.warnings });
 
-    const boundedSummary = (resultSummary || `Completed via automated worker exec: ${label}`).slice(0, 20000);
+    const structuredOutput = delivery.structured_output;
+    const boundedSummary = (delivery.result_summary || `Completed via automated worker exec: ${label}`).slice(0, 20000);
 
     try {
       const validatedFulfillInput = FulfillContractSchema.parse({
@@ -640,6 +639,7 @@ export async function executeTaskAndFulfill(
         claim_token: token,
         result_summary: boundedSummary,
         structured_output: structuredOutput,
+        ...(delivery.artifacts_pointers ? { artifacts_pointers: delivery.artifacts_pointers } : {}),
       });
 
       let fulfillRes = engine.fulfillContract(validatedFulfillInput);
@@ -671,7 +671,13 @@ export async function executeTaskAndFulfill(
         }
       }
 
-      return { ok: fulfillRes.ok, status: fulfillRes.status, fulfill_result: fulfillRes };
+      return {
+        ok: fulfillRes.ok,
+        status: fulfillRes.status,
+        fulfill_result: fulfillRes,
+        delivery_source: delivery.source,
+        ...(delivery.warnings.length > 0 ? { delivery_warnings: delivery.warnings } : {}),
+      };
     } catch (fulfillErr) {
       const fulfillError = fulfillErr instanceof Error ? fulfillErr.message : String(fulfillErr);
       const res = failAfterExit(`FULFILL_ERROR: ${fulfillError}`);

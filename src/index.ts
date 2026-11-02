@@ -61,6 +61,7 @@ Exposed MCP Tools (8):
 
 CLI Subcommands (same binary: \`npx ferrycat <command>\`):
   demo                            Zero-config sandbox walkthrough of the full lifecycle (no MCP setup)
+  init                            Detect installed MCP hosts and add FerryCat to their configs
   dispatch | poll | verify | fulfill | release | extend | fail | inspect | worker | daemon
   Run \`ferrycat-cli --help\` (after a global install) for the full CLI reference.`);
   process.exit(0);

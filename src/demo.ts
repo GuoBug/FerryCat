@@ -89,15 +89,18 @@ function main() {
   const issues = inspect(workspaceRoot, contract.pointers);
 
   const finish = () => {
+    // REQ-ENG-04: explicit delivery envelope; any other stdout line is treated as a log.
+    console.log('demo handler: review finished, emitting delivery envelope');
     process.stdout.write(
       JSON.stringify({
-        ok: true,
-        summary:
-          'Reviewed ' + (contract.pointers || []).length + ' file(s) for contract ' +
-          contract.contract_id + '; ' + issues.length + ' advisory finding(s).',
-        structured_output: {
-          passed: true,
-          issues,
+        ferrycat_delivery: {
+          result_summary:
+            'Reviewed ' + (contract.pointers || []).length + ' file(s) for contract ' +
+            contract.contract_id + '; ' + issues.length + ' advisory finding(s).',
+          structured_output: {
+            passed: true,
+            issues,
+          },
         },
       }) + '\\n'
     );

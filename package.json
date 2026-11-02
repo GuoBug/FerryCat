@@ -20,6 +20,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "lint": "node scripts/lint.js",
     "prepack": "npm run build",
     "bump": "node scripts/bump-version.js",
     "start": "node --experimental-sqlite dist/index.js",

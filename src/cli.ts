@@ -6,6 +6,7 @@ import { ZodError } from 'zod';
 import { expandTilde, FerryCatEngine } from './engine.js';
 import { FerryCatDaemon } from './daemon.js';
 import { runDemo } from './demo.js';
+import { runInit } from './init.js';
 import {
   executeTaskAndFulfill,
   terminateActiveChildrenSync,
@@ -54,6 +55,7 @@ Commands:
   worker      Run background watcher, single-shot claim, or automated script execution
   daemon      Run multi-tenant production daemon with CAS micro-lease and declarative handlers (ADR-0005)
   demo        Zero-config sandbox walkthrough of the full contract lifecycle (no MCP setup needed)
+  init        Detect installed MCP hosts (Antigravity, WorkBuddy, Cursor, VS Code, ...) and add FerryCat to them
 
 Common Options:
   --agent <id>              Agent identity (overrides AGENT_NAME env var)
@@ -187,7 +189,7 @@ Examples:
   ferrycat-cli inspect --target workbuddy --status ACTIVE
   ferrycat-cli inspect --id fc_123 --json`,
 
-  worker: `Usage: ferrycat-cli worker [--agent <id>] [--mode <watch|claim|exec>] [--once] [--interval <ms>] [--exec <cmd>] [--exec-file <script>]
+  worker: `Usage: ferrycat-cli worker [--agent <id>] [--mode <watch|claim|exec>] [--once] [--interval <ms>] [--exec <cmd>] [--exec-file <script>] [--pass-env <NAME>] [--delivery <auto|envelope>]
 
 Runs the FerryCat CLI worker in watcher, single-claim, or automated execution mode.
 
@@ -201,11 +203,22 @@ Options:
   --interval <ms>           Polling interval in milliseconds for persistent loop (>= 100, default: 1000)
   --exec-file <script>      Recommended: script file (.js/.mjs/.cjs/.ts/.ps1/.sh) executed directly via execFile without shell interpolation
   --exec <cmd>              Shell command to run on claim (UNSAFE: executes via system shell, contract JSON piped via stdin)
+  --pass-env <NAME>         Forward an extra host env var into the child (repeatable)
+  --delivery <auto|envelope>
+                            How child stdout becomes the deliverable (REQ-ENG-04):
+                              auto:     {"ferrycat_delivery":{...}} envelope, or a JSON object with
+                                        result_summary / structured_output, or plain text (default)
+                              envelope: only the ferrycat_delivery envelope is accepted; anything
+                                        else marks the contract FAILED (stdout is salvaged)
+
+Delivery envelope (one stdout line, other lines are treated as logs):
+  {"ferrycat_delivery":{"result_summary":"...","structured_output":{...}}}
 
 Examples:
   ferrycat-cli worker --agent workbuddy --mode=watch
   ferrycat-cli worker --agent workbuddy --mode=claim
-  ferrycat-cli worker --agent workbuddy --mode=exec --once --exec-file ./worker-handler.js`,
+  ferrycat-cli worker --agent workbuddy --mode=exec --once --exec-file ./worker-handler.js
+  ferrycat-cli worker --agent workbuddy --mode=exec --exec-file ./handler.js --delivery envelope`,
 
   daemon: `Usage: ferrycat-cli daemon [--config <path>] [--agent <id>] [--once] [--status] [--lease-ttl <sec>] [--interval <ms>]
 
@@ -244,6 +257,46 @@ Examples:
   ferrycat-cli demo
   ferrycat-cli demo --json
   ferrycat-cli demo --keep`,
+
+  init: `Usage: ferrycat-cli init [--client <id>]... [--agent <name>] [--config-path <file>] [--local] [--yes] [--dry-run] [--force] [--list] [--server-name <key>] [--json]
+
+Detects locally installed MCP hosts and merges a "ferrycat" stdio server entry
+({"command":"npx","args":["-y","ferrycat"],"env":{"AGENT_NAME":"<host>"}}) into each host's
+MCP config file. Each host gets its own AGENT_NAME so contracts can be routed between them.
+
+Supported hosts (--client ids):
+  antigravity     ~/.gemini/antigravity/mcp_config.json
+  workbuddy       ~/.workbuddy/.mcp.json (or ~/.workbuddy/mcp.json if already present)
+  cursor          ~/.cursor/mcp.json
+  vscode          <AppData>/Code/User/mcp.json        ("servers" format, type: stdio)
+  windsurf        ~/.codeium/windsurf/mcp_config.json
+  claude-desktop  <AppData>/Claude/claude_desktop_config.json
+  claude-code     ./.mcp.json (project scope, current directory)
+
+Safety:
+  - Unparseable configs (comments / broken JSON) are never rewritten; the snippet is printed instead.
+  - An existing, different "ferrycat" entry is kept unless --force is given.
+  - Existing files are backed up as <file>.ferrycat-bak-<timestamp> before writing.
+  - In a non-interactive shell without --yes, init only prints the plan (dry run).
+
+Options:
+  --client <id>         Only configure these hosts (repeatable or comma-separated). Hosts that
+                        are not detected are configured only when named explicitly.
+  --agent <name>        Override AGENT_NAME for all selected hosts (default: the host id)
+  --config-path <file>  Override target config file path (requires a single --client)
+  --local               Point at this checkout's local dist/index.js instead of npx -y ferrycat
+  --yes, -y             Apply without per-host confirmation
+  --dry-run             Show what would change without writing
+  --force               Replace an existing, different "ferrycat" entry
+  --list                Only print detection results
+  --server-name <key>   MCP server key to write (default: ferrycat)
+  --json                Emit the structured result
+
+Examples:
+  ferrycat-cli init
+  ferrycat-cli init --list
+  ferrycat-cli init --client workbuddy --client antigravity --yes
+  ferrycat-cli init --client cursor --agent cursor-reviewer --dry-run`,
 };
 
 function stripBom(content: string): string {
@@ -488,6 +541,31 @@ function parseArgs(argv: string[]): ParsedCliArgs {
         throw new Error('Invalid --exec-file value: script path cannot be empty.');
       }
       flagOverrides.exec_file = scriptPath;
+    } else if (token === '--client') {
+      const clientId = requireFlagValue('--client', rest[++i]).trim();
+      const existing = (flagOverrides.clients as string[] | undefined) ?? [];
+      existing.push(...clientId.split(',').map((c) => c.trim()).filter(Boolean));
+      flagOverrides.clients = existing;
+    } else if (token === '--server-name') {
+      flagOverrides.server_name = requireFlagValue('--server-name', rest[++i]).trim();
+    } else if (token === '--config-path') {
+      flagOverrides.config_path = requireFlagValue('--config-path', rest[++i]).trim();
+    } else if (token === '--local') {
+      flagOverrides.local = true;
+    } else if (token === '--yes' || token === '-y') {
+      flagOverrides.yes = true;
+    } else if (token === '--dry-run') {
+      flagOverrides.dry_run = true;
+    } else if (token === '--force') {
+      flagOverrides.force = true;
+    } else if (token === '--list') {
+      flagOverrides.list = true;
+    } else if (token === '--delivery') {
+      const mode = requireFlagValue('--delivery', rest[++i]).trim();
+      if (mode !== 'auto' && mode !== 'envelope') {
+        throw new Error(`Invalid --delivery "${mode}": expected "auto" or "envelope".`);
+      }
+      flagOverrides.delivery = mode;
     } else if (token === '--pass-env') {
       const varName = requireFlagValue('--pass-env', rest[++i]).trim();
       if (!varName) {
@@ -1017,6 +1095,7 @@ async function main(): Promise<void> {
           execCmd: validated.exec,
           execFile: validated.exec_file,
           passEnv: validated.pass_env,
+          delivery: validated.delivery,
         };
 
         engine = new FerryCatEngine();
@@ -1101,6 +1180,32 @@ async function main(): Promise<void> {
         }
         break;
       }
+      case 'init': {
+        const serverName = data.server_name as string | undefined;
+        if (serverName !== undefined && !/^[A-Za-z0-9_.-]{1,64}$/.test(serverName)) {
+          throw new Error(`Invalid --server-name "${serverName}": use 1-64 chars of [A-Za-z0-9_.-].`);
+        }
+        const initResult = await runInit({
+          clients: data.clients as string[] | undefined,
+          agent: data.agent_id as string | undefined,
+          serverName,
+          configPath: data.config_path as string | undefined,
+          local: Boolean(data.local),
+          yes: Boolean(data.yes),
+          dryRun: Boolean(data.dry_run),
+          force: Boolean(data.force),
+          list: Boolean(data.list),
+          json: parsed.format === 'json',
+          interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+        });
+        if (parsed.format === 'json') {
+          console.log(JSON.stringify(initResult, null, 2));
+        }
+        if (!initResult.ok) {
+          process.exitCode = 1;
+        }
+        break;
+      }
       case 'demo': {
         const demoResult = await runDemo({
           json: parsed.format === 'json',
@@ -1117,7 +1222,7 @@ async function main(): Promise<void> {
       }
       default:
         throw new Error(
-          `Unknown subcommand "${command}". Supported commands: dispatch, poll, verify, fulfill, release, extend, fail, inspect, worker, daemon, demo. Run "ferrycat-cli --help" for usage.`
+          `Unknown subcommand "${command}". Supported commands: dispatch, poll, verify, fulfill, release, extend, fail, inspect, worker, daemon, demo, init. Run "ferrycat-cli --help" for usage.`
         );
     }
   } catch (err) {

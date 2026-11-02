@@ -387,6 +387,12 @@ export const WorkerCommandShape = {
     .array(z.string().min(1).max(128))
     .optional()
     .describe('List of explicit host environment variable names to forward into child execution environment (CK-06)'),
+  delivery: z
+    .enum(['auto', 'envelope'])
+    .optional()
+    .describe(
+      'REQ-ENG-04 stdout delivery mode: "auto" (default; envelope, legacy result_summary/structured_output keys, or plain text) or "envelope" (only {"ferrycat_delivery": {...}} is accepted).'
+    ),
 };
 
 export const WorkerCommandSchema = z.object(WorkerCommandShape).strict();
@@ -400,6 +406,7 @@ export const HandlerDefinitionSchema = z
       .describe('Absolute or workspace-relative path to handler script file (disallows arbitrary shell execution)'),
     pass_env: z.array(z.string().min(1).max(128)).optional(),
     args: z.array(z.string()).optional(),
+    delivery: z.enum(['auto', 'envelope']).optional(),
   })
   .strict();
 

@@ -12,6 +12,7 @@ if (major < 22 || (major === 22 && minor < 5)) {
 
 const CLI_SUBCOMMANDS = new Set([
   'demo',
+  'init',
   'dispatch',
   'poll',
   'verify',

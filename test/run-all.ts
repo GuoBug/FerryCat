@@ -2306,7 +2306,7 @@ async function test14_Step1ControlledDaemonAndCasLeases(): Promise<void> {
       const parsedAdrConfig = FerryCatConfigFileSchema.parse(rawJson);
       assert.strictEqual(parsedAdrConfig.version, 1);
       assert.strictEqual(parsedAdrConfig.daemon.lease_ttl_sec, 30);
-      assert.strictEqual(parsedAdrConfig.agents.workbuddy.handlers.code_review.exec_file, './scripts/review-handler.js');
+      assert.strictEqual(parsedAdrConfig.agents.workbuddy?.handlers.code_review?.exec_file, './scripts/review-handler.js');
     }
 
     const exampleConfigPath = path.resolve(__dirname, '../ferrycat.config.example.json');
@@ -2742,7 +2742,7 @@ async function test16_DesktopNotificationAndWebhook(): Promise<void> {
       assert.strictEqual(fulfilledMut.status, 'COMPLETED');
 
       const inspectedMut = mutEngine.inspectMeshState({ contract_id: dispatchedMut.contract_id });
-      const completedContract = inspectedMut.contracts[0];
+      const completedContract = inspectedMut.contracts[0] as any;
       assert.strictEqual(completedContract.status, 'COMPLETED');
       assert.strictEqual(
         completedContract.pointers[0].sha256,
@@ -2887,7 +2887,7 @@ async function test16_DesktopNotificationAndWebhook(): Promise<void> {
 
 async function test17_StaticAnalysisGate(): Promise<void> {
   console.log('\n[Test 17] Static Analysis Gate & Verification Harness (Phase 3 Step 2)');
-  const gate = await import('../scripts/static-analysis-gate.cjs');
+  const gate = (await import('../scripts/static-analysis-gate.cjs' as string)) as any;
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ferrycat-test17-'));
 
   try {
@@ -3770,7 +3770,7 @@ async function test20_DaemonJournalAndCrashSelfHealing(): Promise<void> {
       'R3: every journal entry must carry daemon_started_at for PID-reuse disambiguation'
     );
     assert.ok(
-      probeEntry.daemon_started_at <= Date.now(),
+      (probeEntry.daemon_started_at ?? 0) <= Date.now(),
       'R3: daemon_started_at must not be in the future'
     );
     daemonR4Healer.releaseLease();
@@ -3824,6 +3824,392 @@ async function test20_DaemonJournalAndCrashSelfHealing(): Promise<void> {
   }
 }
 
+async function test21_ExecDeliveryContract(): Promise<void> {
+  console.log('\n[Test 21] REQ-ENG-04: stdout Delivery Envelope & Anti-Guessing Contract');
+  const { parseExecDelivery } = await import('../src/delivery.js');
+
+  // 21A: parser shapes
+  const env1 = parseExecDelivery(
+    'starting...\n{"level":"info","msg":"log"}\n{"ferrycat_delivery":{"result_summary":"ok","structured_output":{"passed":true}}}\ndone\n'
+  );
+  assert.ok(env1.ok && env1.source === 'ENVELOPE', 'single envelope line among logs must be accepted');
+  assert.deepStrictEqual(env1.ok && env1.structured_output, { passed: true });
+  assert.strictEqual(env1.ok && env1.result_summary, 'ok');
+
+  const pretty = parseExecDelivery(JSON.stringify({ ferrycat_delivery: { structured_output: { a: 1 } } }, null, 2));
+  assert.ok(pretty.ok && pretty.source === 'ENVELOPE', 'pretty-printed whole-stdout envelope must be accepted');
+
+  const legacy = parseExecDelivery(JSON.stringify({ ok: true, result_summary: 'sum', structured_output: { v: 1 } }));
+  assert.ok(legacy.ok && legacy.source === 'LEGACY_KEYS');
+  assert.deepStrictEqual(legacy.ok && legacy.structured_output, { v: 1 });
+
+  const logJson = parseExecDelivery('{"level":"info","msg":"just a log line"}');
+  assert.ok(logJson.ok && logJson.source === 'RAW_TEXT', 'arbitrary JSON must not be guessed into structured_output');
+  assert.strictEqual(logJson.ok && logJson.structured_output, undefined);
+  assert.ok(logJson.ok && logJson.warnings.length === 1);
+
+  const plain = parseExecDelivery('\uFEFFAll good\n');
+  assert.ok(plain.ok && plain.source === 'RAW_TEXT' && plain.result_summary === 'All good');
+
+  const ambiguous = parseExecDelivery(
+    '{"ferrycat_delivery":{"result_summary":"a"}}\n{"ferrycat_delivery":{"result_summary":"b"}}'
+  );
+  assert.ok(!ambiguous.ok && ambiguous.code === 'DELIVERY_AMBIGUOUS');
+
+  const typo = parseExecDelivery('{"ferrycat_delivery":{"result_summary":"x","structured_ouput":{}}}');
+  assert.ok(!typo.ok && typo.code === 'DELIVERY_MALFORMED', 'unknown envelope keys must be rejected');
+
+  const empty = parseExecDelivery('{"ferrycat_delivery":{}}');
+  assert.ok(!empty.ok && empty.code === 'DELIVERY_MALFORMED');
+
+  const badStructured = parseExecDelivery('{"ferrycat_delivery":{"structured_output":[1,2]}}');
+  assert.ok(!badStructured.ok && badStructured.code === 'DELIVERY_MALFORMED');
+
+  // Pretty-printed envelope interleaved with logs must be rejected as DELIVERY_MALFORMED (never silently degraded to RAW_TEXT)
+  const prettyWithLogs = parseExecDelivery(
+    'booting handler\n' + JSON.stringify({ ferrycat_delivery: { result_summary: 'pretty' } }, null, 2)
+  );
+  assert.ok(!prettyWithLogs.ok && prettyWithLogs.code === 'DELIVERY_MALFORMED');
+
+  // Plain logs + a non-envelope JSON line in RAW_TEXT must emit a symmetric warning
+  const logsPlusJsonLine = parseExecDelivery('step 1\n{"level":"info","msg":"done"}\n');
+  assert.ok(logsPlusJsonLine.ok && logsPlusJsonLine.source === 'RAW_TEXT');
+  assert.strictEqual(logsPlusJsonLine.ok && logsPlusJsonLine.warnings.length, 1);
+
+  // artifacts_pointers with extra unknown keys must be rejected
+  const extraArtifactKey = parseExecDelivery(
+    JSON.stringify({
+      ferrycat_delivery: {
+        result_summary: 'ok',
+        artifacts_pointers: [{ path: 'a.ts', description: 'desc', extra: 1 }],
+      },
+    })
+  );
+  assert.ok(!extraArtifactKey.ok && extraArtifactKey.code === 'DELIVERY_MALFORMED');
+
+  const strictMissing = parseExecDelivery(JSON.stringify({ result_summary: 'legacy' }), 'envelope');
+  assert.ok(!strictMissing.ok && strictMissing.code === 'DELIVERY_MISSING', 'envelope mode rejects legacy shape');
+  const strictPlain = parseExecDelivery('hello', 'envelope');
+  assert.ok(!strictPlain.ok && strictPlain.code === 'DELIVERY_MISSING');
+  const strictOk = parseExecDelivery('log\n{"ferrycat_delivery":{"result_summary":"fine"}}', 'envelope');
+  assert.ok(strictOk.ok && strictOk.source === 'ENVELOPE');
+  console.log('  PASS [21A - Parser Shapes]: envelope (line/pretty), legacy keys, raw text, ambiguous, malformed and envelope-mode rejection.');
+
+  // 21B: supervisor integration
+  const { dir, dbPath, cleanup } = createTempWorkspace('delivery');
+  try {
+    fs.writeFileSync(path.join(dir, 'target.ts'), 'export const x = 1;\n', 'utf8');
+    const engine = new FerryCatEngine({ dbPath });
+    const schema = {
+      type: 'object',
+      required: ['passed'],
+      properties: { passed: { type: 'boolean' } },
+    };
+    const runCase = async (script: string, delivery?: 'auto' | 'envelope', withSchema = false) => {
+      const scriptPath = path.join(dir, `handler-${crypto.randomUUID()}.cjs`);
+      fs.writeFileSync(scriptPath, script, 'utf8');
+      engine.dispatchContract({
+        requester_agent: 'host-a',
+        target_agent: 'host-b',
+        task_type: 'code_review',
+        title: 'Delivery case',
+        context_summary: 'delivery contract test',
+        workspace_root: dir,
+        pointers: [{ path: 'target.ts' }],
+        ...(withSchema ? { contract_schema: schema } : {}),
+      });
+      const poll = await engine.pollNextTask({ agent_id: 'host-b' });
+      assert.ok(poll.has_task && poll.contract);
+      const res = await executeTaskAndFulfill(
+        engine,
+        poll.contract as unknown as ContractPayload,
+        { execFile: scriptPath, delivery },
+        { heartbeatIntervalMs: 1000 }
+      );
+      const row = engine.inspectMeshState({ contract_id: poll.contract.contract_id }).contracts[0];
+      return { res, row };
+    };
+
+    // Envelope with interleaved logs satisfies the schema.
+    const ok = await runCase(
+      `console.log('booting'); console.log(JSON.stringify({level:'debug'}));
+       console.log(JSON.stringify({ ferrycat_delivery: { result_summary: 'reviewed', structured_output: { passed: true } } }));
+       console.log('bye');`,
+      'envelope',
+      true
+    );
+    assert.strictEqual(ok.res.status, 'COMPLETED', JSON.stringify(ok.res));
+    assert.strictEqual(ok.res.delivery_source, 'ENVELOPE');
+    assert.strictEqual(ok.row.result_summary, 'reviewed');
+    assert.deepStrictEqual(ok.row.structured_output, { passed: true });
+
+    // A trailing JSON log line is no longer promoted to structured_output.
+    const raw = await runCase(`console.log(JSON.stringify({ level: 'info', msg: 'finished' }));`);
+    assert.strictEqual(raw.res.status, 'COMPLETED');
+    assert.strictEqual(raw.res.delivery_source, 'RAW_TEXT');
+    assert.ok(raw.res.delivery_warnings && raw.res.delivery_warnings.length === 1);
+    assert.ok(raw.row.structured_output === null || raw.row.structured_output === undefined);
+
+    // Envelope mode: missing envelope fails the contract fast and salvages stdout.
+    const missing = await runCase(`console.log('I forgot the envelope');`, 'envelope');
+    assert.strictEqual(missing.res.status, 'DELIVERY_REJECTED');
+    assert.strictEqual(missing.row.status, 'FAILED');
+    assert.match(String(missing.row.error_reason), /DELIVERY_MISSING/);
+    assert.ok(missing.row.salvaged_result, 'rejected stdout must be salvaged');
+
+    // Ambiguous envelopes are rejected even in auto mode.
+    const amb = await runCase(
+      `console.log(JSON.stringify({ ferrycat_delivery: { result_summary: 'a' } }));
+       console.log(JSON.stringify({ ferrycat_delivery: { result_summary: 'b' } }));`
+    );
+    assert.strictEqual(amb.res.status, 'DELIVERY_REJECTED');
+    assert.match(String(amb.row.error_reason), /DELIVERY_AMBIGUOUS/);
+
+    engine.close();
+    console.log('  PASS [21B - Supervisor Integration]: envelope among logs COMPLETED with schema; JSON log not promoted; envelope mode FAILED + salvage; ambiguous rejected.');
+
+    // 21C: CLI flag validation
+    const cliPath = path.resolve('dist/cli.js');
+    const bad = await new Promise<{ code: number; stderr: string }>((resolve) => {
+      execFile(
+        process.execPath,
+        ['--experimental-sqlite', cliPath, 'worker', '--agent', 'x', '--delivery', 'guess'],
+        { env: { ...process.env, FERRYCAT_DB_PATH: dbPath, NODE_NO_WARNINGS: '1' } },
+        (err, _stdout, stderr) => resolve({ code: err ? (err as any).code ?? 1 : 0, stderr })
+      );
+    });
+    assert.notStrictEqual(bad.code, 0);
+    assert.match(bad.stderr, /Invalid --delivery/);
+    console.log('  PASS [21C - CLI Flag]: invalid --delivery value rejected with a clear message.');
+
+    // 21D: REQ-DOC-02 docs/examples/* anti-drift & end-to-end handler execution
+    const { DispatchContractSchema, FulfillContractSchema } = await import('../src/schemas.js');
+    const { validateContractOutput } = await import('../src/schema-validator.js');
+    const { assertSafeGitPatch } = await import('../src/fingerprint.js');
+    const dispatchExample = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '../docs/examples/dispatch.example.json'), 'utf8')
+    );
+    const fulfillExample = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '../docs/examples/fulfill.example.json'), 'utf8')
+    );
+    const parsedDispatch = DispatchContractSchema.parse(dispatchExample);
+    const parsedFulfill = FulfillContractSchema.parse(fulfillExample);
+    const schemaCheck = validateContractOutput(
+      parsedDispatch.contract_schema as Record<string, unknown>,
+      parsedFulfill.structured_output
+    );
+    assert.strictEqual(schemaCheck.valid, true, `fulfill.example.json must satisfy dispatch.example.json schema: ${schemaCheck.errors.join('; ')}`);
+
+    // Verify unified-diff structure & hunk arithmetic on every fixes[].patch in fulfill.example.json
+    const exampleFixes = ((parsedFulfill.structured_output as any)?.fixes ?? []) as Array<{
+      path: string;
+      patch: string;
+    }>;
+    assert.ok(exampleFixes.length > 0, 'fulfill.example.json must include at least one fix patch');
+    for (const fix of exampleFixes) {
+      const checked = assertSafeGitPatch(fix.patch, [fix.path]);
+      assert.ok(checked.sha256.length === 64);
+      const hunkMatch = fix.patch.match(/@@ -(\d+),(\d+) \+(\d+),(\d+) @@\n([\s\S]*)$/);
+      assert.ok(hunkMatch, `fix patch for ${fix.path} must have a valid @@ hunk header`);
+      const expectedOld = Number(hunkMatch[2]);
+      const expectedNew = Number(hunkMatch[4]);
+      const bodyLines = hunkMatch[5].replace(/\n$/, '').split('\n');
+      const actualOld = bodyLines.filter((l) => l.startsWith(' ') || l.startsWith('-')).length;
+      const actualNew = bodyLines.filter((l) => l.startsWith(' ') || l.startsWith('+')).length;
+      assert.strictEqual(actualOld, expectedOld, `hunk old line count mismatch in ${fix.path}`);
+      assert.strictEqual(actualNew, expectedNew, `hunk new line count mismatch in ${fix.path}`);
+    }
+
+    // Run docs/examples/handler.example.cjs through executeTaskAndFulfill in strict envelope mode
+    const exEngine = new FerryCatEngine({ dbPath });
+    const todoFile = path.join(dir, 'sample-with-todo.ts');
+    fs.writeFileSync(todoFile, '// TODO: refactor this helper\nexport const v = 42;\n', 'utf8');
+    const exDispatched = exEngine.dispatchContract({
+      requester_agent: 'antigravity',
+      target_agent: 'workbuddy',
+      task_type: 'code_review',
+      title: 'Run reference example handler',
+      context_summary: 'Scan pointers for TODO markers',
+      workspace_root: dir,
+      pointers: [{ path: 'sample-with-todo.ts', line_range: [1, 2] }],
+      contract_schema: parsedDispatch.contract_schema,
+    });
+    const exPoll = await exEngine.pollNextTask({ agent_id: 'workbuddy' });
+    assert.ok(exPoll.has_task && exPoll.contract);
+    const exHandlerPath = path.resolve(__dirname, '../docs/examples/handler.example.cjs');
+    const exExec = await executeTaskAndFulfill(
+      exEngine,
+      exPoll.contract as unknown as ContractPayload,
+      { execFile: exHandlerPath, delivery: 'envelope' },
+      { heartbeatIntervalMs: 1000 }
+    );
+    assert.strictEqual(exExec.ok, true, JSON.stringify(exExec));
+    assert.strictEqual(exExec.status, 'COMPLETED');
+    assert.strictEqual(exExec.delivery_source, 'ENVELOPE');
+    const exRow = exEngine.inspectMeshState({ contract_id: exDispatched.contract_id }).contracts[0];
+    assert.strictEqual((exRow.structured_output as any).verdict, 'CHANGES_REQUESTED');
+    assert.strictEqual((exRow.structured_output as any).findings.length, 1);
+    exEngine.close();
+    console.log('  PASS [21D - REQ-DOC-02 Examples Anti-Drift]: dispatch/fulfill/handler examples validated against Zod + Ajv and executed in strict envelope mode.');
+  } finally {
+    cleanup();
+  }
+}
+
+async function test22_InitWizard(): Promise<void> {
+  console.log('\n[Test 22] REQ-EXP-02: ferrycat init MCP Host Detection & Safe Config Merge');
+  const { runInit } = await import('../src/init.js');
+  const { dir, cleanup } = createTempWorkspace('init');
+  try {
+    const home = path.join(dir, 'home');
+    const cwd = path.join(dir, 'project');
+    const appData = path.join(home, 'AppData', 'Roaming');
+    fs.mkdirSync(cwd, { recursive: true });
+    // Installed: antigravity (existing config with other server), cursor (no config), workbuddy (JSONC config)
+    fs.mkdirSync(path.join(home, '.gemini', 'antigravity'), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, '.gemini', 'antigravity', 'mcp_config.json'),
+      JSON.stringify({ mcpServers: { other: { command: 'other-bin' } }, extra: 1 }, null, 2),
+      'utf8'
+    );
+    fs.mkdirSync(path.join(home, '.cursor'), { recursive: true });
+    fs.mkdirSync(path.join(home, '.workbuddy'), { recursive: true });
+    const jsoncContent = '{\n  // user comment\n  "mcpServers": {}\n}\n';
+    fs.writeFileSync(path.join(home, '.workbuddy', 'mcp.json'), jsoncContent, 'utf8');
+    fs.mkdirSync(path.join(appData, 'Code', 'User'), { recursive: true });
+
+    const environment = { homeDir: home, cwd, platform: 'win32' as NodeJS.Platform, env: { APPDATA: appData } };
+    const silent = () => {};
+
+    // 22A: dry run writes nothing
+    const dry = await runInit({ environment, write: silent });
+    assert.strictEqual(dry.dry_run, true);
+    assert.strictEqual(fs.existsSync(path.join(home, '.cursor', 'mcp.json')), false, 'dry run must not write');
+    const byId = (r: typeof dry, id: string) => r.clients.find((c) => c.id === id)!;
+    assert.strictEqual(byId(dry, 'cursor').action, 'PLANNED');
+    assert.strictEqual(byId(dry, 'windsurf').action, 'NOT_DETECTED');
+    assert.strictEqual(byId(dry, 'workbuddy').action, 'UNPARSEABLE');
+    console.log('  PASS [22A - Detection & Dry Run]: hosts detected, plan reported, zero files written.');
+
+    // 22B: apply
+    const applied = await runInit({ environment, yes: true, write: silent });
+    assert.strictEqual(applied.ok, true);
+    const cursorCfg = JSON.parse(fs.readFileSync(path.join(home, '.cursor', 'mcp.json'), 'utf8'));
+    assert.deepStrictEqual(cursorCfg.mcpServers.ferrycat, {
+      command: 'npx',
+      args: ['-y', 'ferrycat'],
+      env: { AGENT_NAME: 'cursor' },
+    });
+    const agCfg = JSON.parse(fs.readFileSync(path.join(home, '.gemini', 'antigravity', 'mcp_config.json'), 'utf8'));
+    assert.deepStrictEqual(agCfg.mcpServers.other, { command: 'other-bin' }, 'existing servers preserved');
+    assert.strictEqual(agCfg.extra, 1, 'unrelated keys preserved');
+    assert.strictEqual(agCfg.mcpServers.ferrycat.env.AGENT_NAME, 'antigravity');
+    assert.ok(byId(applied, 'antigravity').backup_path && fs.existsSync(byId(applied, 'antigravity').backup_path!));
+    const vsCfg = JSON.parse(fs.readFileSync(path.join(appData, 'Code', 'User', 'mcp.json'), 'utf8'));
+    assert.strictEqual(vsCfg.servers.ferrycat.type, 'stdio', 'VS Code uses "servers" + type stdio');
+    assert.strictEqual(fs.readFileSync(path.join(home, '.workbuddy', 'mcp.json'), 'utf8'), jsoncContent, 'JSONC untouched');
+    assert.strictEqual(fs.existsSync(path.join(cwd, '.mcp.json')), false, 'undetected claude-code not written');
+    console.log('  PASS [22B - Safe Merge]: entries added, foreign servers/keys preserved, backup written, VS Code format, JSONC untouched.');
+
+    // 22C: idempotency, conflict, force
+    const again = await runInit({ environment, yes: true, write: silent });
+    assert.strictEqual(byId(again, 'cursor').action, 'UNCHANGED');
+    const conflict = await runInit({ environment, yes: true, clients: ['cursor'], agent: 'cursor-reviewer', write: silent });
+    assert.strictEqual(byId(conflict, 'cursor').action, 'CONFLICT');
+    assert.strictEqual(
+      JSON.parse(fs.readFileSync(path.join(home, '.cursor', 'mcp.json'), 'utf8')).mcpServers.ferrycat.env.AGENT_NAME,
+      'cursor',
+      'conflict must not overwrite'
+    );
+    const forced = await runInit({ environment, yes: true, force: true, clients: ['cursor'], agent: 'cursor-reviewer', write: silent });
+    assert.strictEqual(byId(forced, 'cursor').action, 'UPDATED');
+    assert.strictEqual(
+      JSON.parse(fs.readFileSync(path.join(home, '.cursor', 'mcp.json'), 'utf8')).mcpServers.ferrycat.env.AGENT_NAME,
+      'cursor-reviewer'
+    );
+    console.log('  PASS [22C - Idempotency & Conflict]: re-run UNCHANGED, differing entry kept without --force, replaced with --force.');
+
+    // 22D: explicit undetected client, interactive decline, unknown client
+    const explicit = await runInit({ environment, yes: true, clients: ['claude-code'], write: silent });
+    assert.strictEqual(byId(explicit, 'claude-code').action, 'CREATED');
+    assert.ok(fs.existsSync(path.join(cwd, '.mcp.json')));
+    fs.mkdirSync(path.join(home, '.codeium', 'windsurf'), { recursive: true });
+    const declined = await runInit({
+      environment,
+      interactive: true,
+      clients: ['windsurf'],
+      prompt: async () => 'n',
+      write: silent,
+    });
+    assert.strictEqual(byId(declined, 'windsurf').action, 'SKIPPED');
+    assert.strictEqual(fs.existsSync(path.join(home, '.codeium', 'windsurf', 'mcp_config.json')), false);
+    await assert.rejects(() => runInit({ environment, clients: ['notepad'], write: silent }), /Unknown --client/);
+    console.log('  PASS [22D - Explicit/Interactive/Unknown]: explicit project scope created, interactive "n" skipped, unknown client rejected.');
+
+    // 22E: CLI & bin/ferrycat.js routing for `init`
+    const binPath = path.resolve(__dirname, '../bin/ferrycat.js');
+    const cliInitOut = await new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
+      execFile(
+        process.execPath,
+        [binPath, 'init', '--list', '--json'],
+        { env: { ...process.env, NODE_NO_WARNINGS: '1' } },
+        (err, stdout, stderr) => resolve({ code: err ? (err as any).code ?? 1 : 0, stdout, stderr })
+      );
+    });
+    assert.strictEqual(cliInitOut.code, 0, cliInitOut.stderr);
+    const parsedCliInit = JSON.parse(cliInitOut.stdout);
+    assert.strictEqual(parsedCliInit.ok, true);
+    assert.strictEqual(parsedCliInit.dry_run, true);
+    assert.ok(Array.isArray(parsedCliInit.clients) && parsedCliInit.clients.length >= 7);
+    console.log('  PASS [22E - CLI & Bin Routing]: `ferrycat init --list --json` routed cleanly via bin/ferrycat.js.');
+
+    // 22F: WorkBuddy dot-prefixed `.mcp.json` discovery (no duplicate mcp.json) + --local + --config-path
+    const wbHome = path.join(dir, 'wb-home');
+    const wbDir = path.join(wbHome, '.workbuddy');
+    fs.mkdirSync(wbDir, { recursive: true });
+    const wbDotConfig = path.join(wbDir, '.mcp.json');
+    fs.writeFileSync(
+      wbDotConfig,
+      JSON.stringify({ mcpServers: { 'connector-proxy': { command: 'proxy' } } }, null, 2),
+      'utf8'
+    );
+    const wbEnv = { homeDir: wbHome, cwd, platform: 'win32' as NodeJS.Platform, env: { APPDATA: appData } };
+    const wbRes = await runInit({
+      environment: wbEnv,
+      clients: ['workbuddy'],
+      local: true,
+      yes: true,
+      write: silent,
+    });
+    assert.strictEqual(wbRes.ok, true);
+    assert.strictEqual(byId(wbRes, 'workbuddy').action, 'CREATED');
+    assert.strictEqual(byId(wbRes, 'workbuddy').config_path, wbDotConfig);
+    assert.strictEqual(
+      fs.existsSync(path.join(wbDir, 'mcp.json')),
+      false,
+      'must merge into existing .mcp.json and never create a sibling mcp.json'
+    );
+    const mergedWb = JSON.parse(fs.readFileSync(wbDotConfig, 'utf8'));
+    assert.deepStrictEqual(mergedWb.mcpServers['connector-proxy'], { command: 'proxy' });
+    assert.strictEqual(mergedWb.mcpServers.ferrycat.command, process.execPath);
+    assert.strictEqual(mergedWb.mcpServers.ferrycat.env.AGENT_NAME, 'workbuddy');
+
+    const customCfgPath = path.join(dir, 'custom-host-mcp.json');
+    const customRes = await runInit({
+      environment: wbEnv,
+      clients: ['cursor'],
+      configPath: customCfgPath,
+      yes: true,
+      write: silent,
+    });
+    assert.strictEqual(byId(customRes, 'cursor').action, 'CREATED');
+    assert.ok(fs.existsSync(customCfgPath));
+    console.log('  PASS [22F - WorkBuddy .mcp.json & --local/--config-path]: existing .mcp.json merged in-place without sibling mcp.json; --local and --config-path verified.');
+  } finally {
+    cleanup();
+  }
+}
+
 async function main(): Promise<void> {
   console.log('==============================================================');
   console.log(' FerryCat Offline Verification Suite (Node ' + process.version + ')');
@@ -3849,9 +4235,11 @@ async function main(): Promise<void> {
   await test18_AsyncNonBlockingTransientRetry();
   await test19_SelfContainedGitPatchMode();
   await test20_DaemonJournalAndCrashSelfHealing();
+  await test21_ExecDeliveryContract();
+  await test22_InitWizard();
 
   console.log('\n==============================================================');
-  console.log(' ALL 20 TEST SUITES PASSED GREEN');
+  console.log(' ALL 22 TEST SUITES PASSED GREEN');
   console.log('==============================================================');
 }
 

@@ -1,0 +1,46 @@
+{
+  "requester_agent": "antigravity",
+  "target_agent": "workbuddy",
+  "task_type": "code_review",
+  "title": "Review lease-token checks in supervisor heartbeat",
+  "context_summary": "Review the heartbeat renewal path. Focus: (1) is claim_token checked before every extend_ttl call, (2) can a lost lease leave an orphan child running. Do NOT edit pointer files; propose changes in structured_output.fixes.",
+  "workspace_root": "/absolute/path/to/your/repo",
+  "pointers": [
+    { "path": "src/supervisor.ts", "line_range": [480, 545] },
+    { "path": "src/engine.ts" }
+  ],
+  "contract_schema": {
+    "type": "object",
+    "required": ["verdict", "findings"],
+    "additionalProperties": false,
+    "properties": {
+      "verdict": { "type": "string", "enum": ["APPROVED", "CHANGES_REQUESTED", "REJECTED"] },
+      "findings": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["severity", "path", "message"],
+          "properties": {
+            "severity": { "type": "string", "enum": ["blocker", "major", "minor", "nit"] },
+            "path": { "type": "string" },
+            "line": { "type": "integer", "minimum": 1 },
+            "message": { "type": "string" }
+          }
+        }
+      },
+      "fixes": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["path", "patch", "description"],
+          "properties": {
+            "path": { "type": "string" },
+            "patch": { "type": "string" },
+            "description": { "type": "string" }
+          }
+        }
+      }
+    }
+  },
+  "exec_ttl_sec": 1800
+}

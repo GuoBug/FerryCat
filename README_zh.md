@@ -233,7 +233,7 @@ Sandbox: C:\Users\...\Temp\ferrycat-demo-c5iK6V
 
 ### 1. 推荐：零配置免安装挂载 (npx)
 
-无需手动克隆仓库或本地编译，直接在各 IDE 宿主的 MCP 配置文件中声明（基于全局或 `npx -y ferrycat`）：
+无需手动克隆仓库或本地编译。推荐直接运行 `npx ferrycat init --yes` 自动探测本机已安装的 IDE 宿主（Antigravity、WorkBuddy、Cursor、VS Code、Windsurf、Claude Desktop、Claude Code）并安全合并注入配置（自带原文件备份与 JSONC 注释保护），或在各 IDE 宿主的 MCP 配置文件中手动声明（基于全局或 `npx -y ferrycat`）：
 
 #### Antigravity 宿主配置
 编辑 `%USERPROFILE%\.gemini\antigravity\mcp_config.json`（macOS/Linux 为 `~/.gemini/antigravity/mcp_config.json`）：
@@ -311,7 +311,8 @@ npx ferrycat verify <CONTRACT_ID>
 监听契约队列并直接拉起本地脚本执行（支持安全脚本执行与非零退出自动熔断为 `FAILED`）：
 ```bash
 # 启动常驻 Worker 监听并自动执行指定脚本（无 Shell 注入风险）
-npx ferrycat worker --agent codex --mode=exec --exec-file ./scripts/review.sh
+npx ferrycat worker --agent codex --mode=exec --exec-file ./scripts/review.sh --delivery envelope
+# 标准载荷与 Handler 范例模板见 docs/examples/（dispatch.example.json / fulfill.example.json / handler.example.cjs）
 ```
 
 ### 4. 零配置一键沙箱演练 (demo)

@@ -4,6 +4,9 @@
  * Demonstrates a declarative worker script invoked via execFile.
  * Receives the contract payload as JSON on standard input (stdin),
  * executes automated review checks, and outputs a JSON result to stdout.
+ *
+ * Delivery contract (REQ-ENG-04): exactly one stdout line carries the
+ * {"ferrycat_delivery": {...}} envelope; every other stdout line is a log.
  */
 const fs = require('node:fs');
 
@@ -15,13 +18,15 @@ function main() {
   }
 
   const contract = JSON.parse(stdinData);
+  console.log(`review-handler: reviewing ${contract.contract_id}`);
   console.log(JSON.stringify({
-    ok: true,
-    summary: `Automated review completed for contract ${contract.contract_id}: "${contract.title}"`,
-    structured_output: {
-      overall_verdict: 'APPROVED',
-      summary: 'Automated static review passed with no blocking issues detected.',
-      findings: []
+    ferrycat_delivery: {
+      result_summary: `Automated review completed for contract ${contract.contract_id}: "${contract.title}"`,
+      structured_output: {
+        overall_verdict: 'APPROVED',
+        summary: 'Automated static review passed with no blocking issues detected.',
+        findings: []
+      }
     }
   }));
 }
