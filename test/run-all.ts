@@ -3871,6 +3871,10 @@ async function test21_ExecDeliveryContract(): Promise<void> {
   );
   assert.ok(!prettyWithLogs.ok && prettyWithLogs.code === 'DELIVERY_MALFORMED');
 
+  // Prose mention of ferrycat_delivery in logs without key-colon syntax must NOT false-positive as DELIVERY_MALFORMED
+  const proseMention = parseExecDelivery('note: ferrycat_delivery is supported\nAll checks passed.\n');
+  assert.ok(proseMention.ok && proseMention.source === 'RAW_TEXT');
+
   // Plain logs + a non-envelope JSON line in RAW_TEXT must emit a symmetric warning
   const logsPlusJsonLine = parseExecDelivery('step 1\n{"level":"info","msg":"done"}\n');
   assert.ok(logsPlusJsonLine.ok && logsPlusJsonLine.source === 'RAW_TEXT');
@@ -4193,6 +4197,14 @@ async function test22_InitWizard(): Promise<void> {
     assert.deepStrictEqual(mergedWb.mcpServers['connector-proxy'], { command: 'proxy' });
     assert.strictEqual(mergedWb.mcpServers.ferrycat.command, process.execPath);
     assert.strictEqual(mergedWb.mcpServers.ferrycat.env.AGENT_NAME, 'workbuddy');
+    const wbAgain = await runInit({
+      environment: wbEnv,
+      clients: ['workbuddy'],
+      local: true,
+      yes: true,
+      write: silent,
+    });
+    assert.strictEqual(byId(wbAgain, 'workbuddy').action, 'UNCHANGED', '--local re-run must be idempotent');
 
     const customCfgPath = path.join(dir, 'custom-host-mcp.json');
     const customRes = await runInit({

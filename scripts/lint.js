@@ -57,6 +57,10 @@ for (const [key, val] of Object.entries(compilerOpts)) {
     if (val) tscFlags.push(`--${key}`);
   } else if (typeof val === 'string') {
     tscFlags.push(`--${key}`, val);
+  } else {
+    errors.push(
+      `[TSC] tsconfig.json compilerOptions.${key} has unsupported type "${Array.isArray(val) ? 'array' : typeof val}" and cannot be mapped to a single tsc CLI flag; handle it explicitly in scripts/lint.js.`
+    );
   }
 }
 

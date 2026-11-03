@@ -193,10 +193,12 @@ export function parseExecDelivery(stdout: string, mode: DeliveryMode = 'auto'): 
     return validateEnvelope(envelopeLines[0], warnings);
   }
 
-  // 2b. The key is present in the text but never as a parseable single line: a multi-line /
-  // pretty-printed envelope interleaved with logs (or multiple pretty-printed envelopes).
-  // Refuse it loudly instead of silently degrading to RAW_TEXT.
-  if (text.includes(DELIVERY_ENVELOPE_KEY)) {
+  // 2b. The key is present in object-key position ("ferrycat_delivery": ...) but never as a
+  // parseable single line: a multi-line / pretty-printed envelope interleaved with logs.
+  // Refuse it loudly instead of silently degrading to RAW_TEXT, while allowing prose logs
+  // that merely mention the word `ferrycat_delivery` without a colon.
+  const ENVELOPE_KEY_PATTERN = new RegExp(`["']?${DELIVERY_ENVELOPE_KEY}["']?\\s*:`);
+  if (ENVELOPE_KEY_PATTERN.test(text)) {
     return reject(
       'DELIVERY_MALFORMED',
       `"${DELIVERY_ENVELOPE_KEY}" appears on stdout but not as one parseable JSON line; emit it with JSON.stringify(envelope) (no indentation) on a single line.`
