@@ -3897,6 +3897,12 @@ async function test21_ExecDeliveryContract(): Promise<void> {
   assert.ok(!strictPlain.ok && strictPlain.code === 'DELIVERY_MISSING');
   const strictOk = parseExecDelivery('log\n{"ferrycat_delivery":{"result_summary":"fine"}}', 'envelope');
   assert.ok(strictOk.ok && strictOk.source === 'ENVELOPE');
+
+  // Empty or whitespace-only stdout must be rejected even in auto mode (no fabricated completion)
+  const emptyStdoutAuto = parseExecDelivery('');
+  assert.ok(!emptyStdoutAuto.ok && emptyStdoutAuto.code === 'DELIVERY_MISSING');
+  const whitespaceStdoutAuto = parseExecDelivery('   \n\t  \r\n');
+  assert.ok(!whitespaceStdoutAuto.ok && whitespaceStdoutAuto.code === 'DELIVERY_MISSING');
   console.log('  PASS [21A - Parser Shapes]: envelope (line/pretty), legacy keys, raw text, ambiguous, malformed and envelope-mode rejection.');
 
   // 21B: supervisor integration
@@ -3968,6 +3974,12 @@ async function test21_ExecDeliveryContract(): Promise<void> {
     );
     assert.strictEqual(amb.res.status, 'DELIVERY_REJECTED');
     assert.match(String(amb.row.error_reason), /DELIVERY_AMBIGUOUS/);
+
+    // Empty stdout in auto mode must be rejected as DELIVERY_MISSING rather than fabricating completion.
+    const emptyAuto = await runCase(`// intentionally silent script`);
+    assert.strictEqual(emptyAuto.res.status, 'DELIVERY_REJECTED');
+    assert.strictEqual(emptyAuto.row.status, 'FAILED');
+    assert.match(String(emptyAuto.row.error_reason), /DELIVERY_MISSING/);
 
     engine.close();
     console.log('  PASS [21B - Supervisor Integration]: envelope among logs COMPLETED with schema; JSON log not promoted; envelope mode FAILED + salvage; ambiguous rejected.');

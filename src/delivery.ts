@@ -212,10 +212,16 @@ export function parseExecDelivery(stdout: string, mode: DeliveryMode = 'auto'): 
       `No "${DELIVERY_ENVELOPE_KEY}" envelope found on stdout (delivery mode "envelope").`
     );
   }
+  if (!text) {
+    return reject(
+      'DELIVERY_MISSING',
+      'Child process exited with empty stdout; no deliverable payload or summary was produced.'
+    );
+  }
   if (hasOtherJsonObjectLine) {
     warnings.push(
       `stdout contains JSON object line(s) without "${DELIVERY_ENVELOPE_KEY}"; delivered as plain text only (not promoted to structured_output).`
     );
   }
-  return { ok: true, source: 'RAW_TEXT', result_summary: text || undefined, warnings };
+  return { ok: true, source: 'RAW_TEXT', result_summary: text, warnings };
 }

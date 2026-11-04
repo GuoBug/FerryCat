@@ -19,7 +19,7 @@ function loadPackageVersion(): string {
   try {
     const pkgPath = fileURLToPath(new URL('../package.json', import.meta.url));
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: string };
-    return pkg.version ?? '0.4.0';
+    return pkg.version ?? '0.5.0';
   } catch {
     return '0.3.2';
   }

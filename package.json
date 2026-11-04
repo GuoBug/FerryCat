@@ -1,6 +1,6 @@
 {
   "name": "ferrycat",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "mcpName": "io.github.GuoBug/ferrycat",
   "description": "FerryCat: Contract-driven cross-host AI agent handoff, code review & verification harness over MCP and SQLite WAL",
   "type": "module",
