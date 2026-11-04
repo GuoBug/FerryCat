@@ -453,6 +453,15 @@ async function test5_DualStageTtlAndHappyPath(): Promise<void> {
 
 async function test6_McpStdioHandshakeAndToolDiscovery(): Promise<void> {
   console.log('\n[Test 6] MCP Stdio Server Handshake & 8-Tool Registration Check');
+  // Verify server.json schema compatibility with official MCP Registry
+  const serverJsonRaw = fs.readFileSync(path.resolve(__dirname, '../server.json'), 'utf8');
+  const serverJson = JSON.parse(serverJsonRaw);
+  assert.ok(
+    typeof serverJson.description === 'string' && serverJson.description.length <= 100,
+    'server.json description length must be <= 100 per MCP Registry schema'
+  );
+  assert.strictEqual(serverJson.version, PKG_VERSION);
+
   const distIndex = path.resolve(__dirname, '../dist/index.js');
   const { dbPath, cleanup } = createTempWorkspace('mcp-stdio');
 

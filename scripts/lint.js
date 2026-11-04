@@ -151,6 +151,21 @@ for (const rel of srcTsFiles) {
   });
 }
 
+// 5. MCP Registry server.json schema constraints guard
+const serverJsonPath = path.join(ROOT, 'server.json');
+if (fs.existsSync(serverJsonPath)) {
+  try {
+    const sj = JSON.parse(fs.readFileSync(serverJsonPath, 'utf8'));
+    if (typeof sj.description === 'string' && sj.description.length > 100) {
+      errors.push(
+        `[MCP-REGISTRY] server.json description length (${sj.description.length}) exceeds official MCP Registry limit of 100 characters`
+      );
+    }
+  } catch (err) {
+    errors.push(`[MCP-REGISTRY] failed to parse server.json: ${err.message}`);
+  }
+}
+
 if (errors.length > 0) {
   console.error(`FerryCat lint failed with ${errors.length} issue(s):\n  - ${errors.join('\n  - ')}`);
   process.exit(1);
